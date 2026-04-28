@@ -1,0 +1,122 @@
+{
+  "theme": "light",
+  "archetype": "Organic & Earthy (Modified to Cheerful Modern Medical)",
+  "language_direction": "rtl",
+  "colors": {
+    "primary": {
+      "light": "#4ade80",
+      "DEFAULT": "#22c55e",
+      "dark": "#16a34a",
+      "description": "Green: Health, success, and primary actions like Sell/Checkout."
+    },
+    "secondary": {
+      "light": "#e0f2fe",
+      "DEFAULT": "#38bdf8",
+      "dark": "#0284c7",
+      "description": "Light Blue: Calm, clinical trust, used for secondary actions and Buy/Receive sections."
+    },
+    "background": "#f8fafc",
+    "surface": "#ffffff",
+    "text_primary": "#0f172a",
+    "text_secondary": "#64748b",
+    "border": "#e2e8f0",
+    "error": "#ef4444",
+    "success": "#22c55e"
+  },
+  "typography": {
+    "font_family": "Cairo, Tajawal, system-ui, sans-serif",
+    "h1": "text-3xl sm:text-4xl font-bold tracking-tight text-slate-900",
+    "h2": "text-2xl sm:text-3xl font-bold tracking-tight text-slate-900",
+    "h3": "text-xl font-semibold text-slate-800",
+    "body": "text-base text-slate-600 leading-relaxed",
+    "button": "text-lg font-bold tracking-wide",
+    "label": "text-sm font-semibold text-slate-500 uppercase tracking-wider"
+  },
+  "layout_and_spacing": {
+    "rtl_rules": "MUST use dir='rtl' on the root element. Use logical Tailwind properties: ms- (margin-inline-start), me- (margin-inline-end), ps- (padding-inline-start), pe- (padding-inline-end), text-start, text-end. Avoid l/r (left/right) utilities.",
+    "container": "w-full max-w-md mx-auto min-h-screen bg-slate-50 relative flex flex-col overflow-hidden shadow-2xl",
+    "padding": "p-4 sm:p-6",
+    "gap": "gap-4 sm:gap-6",
+    "corners": "rounded-2xl sm:rounded-3xl",
+    "mobile_first": "Design is strictly a mobile POS interface. Layout must fill vertical space efficiently."
+  },
+  "components": {
+    "button_primary": "w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white rounded-2xl py-4 transition-all active:scale-[0.98] shadow-lg shadow-green-500/25",
+    "button_secondary": "w-full flex items-center justify-center gap-2 bg-sky-500 hover:bg-sky-600 text-white rounded-2xl py-4 transition-all active:scale-[0.98] shadow-lg shadow-sky-500/25",
+    "button_outline": "w-full flex items-center justify-center gap-2 bg-transparent border-2 border-slate-200 hover:border-green-500 text-slate-700 rounded-2xl py-4 transition-all active:scale-[0.98]",
+    "input_field": "w-full bg-white border border-slate-200 rounded-xl px-4 py-4 text-slate-900 text-base focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all shadow-sm placeholder:text-slate-400",
+    "card": "bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.04)]",
+    "tile": "bg-white rounded-3xl p-6 border-2 border-transparent hover:border-green-100 shadow-sm flex flex-col items-center justify-center gap-3 transition-all active:scale-[0.96] text-center"
+  },
+  "screens": {
+    "login": {
+      "layout": "Clean white background. Top area holds a modern medical logo (e.g., cross with a leaf). Form centered vertically.",
+      "fields": ["اسم الصيدلية (Pharmacy Name)", "رقم الهاتف (Phone)", "الرمز السري (Password)", "عنوان الصيدلية (Address)"],
+      "action": "Large Green Login Button. Below it, a subtle text link: 'تسجيل دخول المذاخر' (Wholesalers Login)."
+    },
+    "home": {
+      "layout": "Header with Pharmacy Name and subtle logout button. Content is a 2x2 grid (Bento Grid) of 4 large, tap-friendly tiles.",
+      "tiles": [
+        {"title": "البيع (Sell)", "bg": "bg-green-50", "text": "text-green-700", "icon_color": "text-green-500"},
+        {"title": "الشراء (Buy)", "bg": "bg-sky-50", "text": "text-sky-700", "icon_color": "text-sky-500"},
+        {"title": "المخزن (Inventory)", "bg": "bg-amber-50", "text": "text-amber-700", "icon_color": "text-amber-500"},
+        {"title": "المذاخر (Suppliers)", "bg": "bg-indigo-50", "text": "text-indigo-700", "icon_color": "text-indigo-500"}
+      ]
+    },
+    "sell_and_buy_scanner": {
+      "layout": "Top 40% of screen: Mocked Camera Viewfinder (black bg with scanner brackets and animated green laser line). Bottom 60%: Sliding bottom sheet containing the cart.",
+      "features": "Instant add representation (< 2s). Cart items list with quick +/- buttons. Grand total prominently displayed. Checkout button sticks to the bottom. For 'Buy', allow manual price input field per item."
+    },
+    "inventory": {
+      "layout": "Header with Search Bar. Scrollable list of medicines with current stock level indicators (red if low, green if good).",
+      "action": "Tapping a medicine adds it to 'Current Order'. A floating sticky bottom bar shows 'إنشاء طلبية' (Create Order) leading to a mock WhatsApp/Screenshot confirmation screen."
+    },
+    "suppliers_marketplace": {
+      "layout": "E-commerce feed. Filter chips at the top. Grid of medicines offered by wholesalers with prices clearly visible.",
+      "card_style": "Product image at top, title, wholesaler name (small), price, and an 'Add to Cart' button."
+    }
+  },
+  "motion": {
+    "page_transitions": "Framer motion for smooth screen changes. Use x: 50, opacity: 0 to x: 0, opacity: 1 (accounting for RTL direction).",
+    "micro_interactions": "All buttons and tiles MUST scale down slightly on active/tap (active:scale-95).",
+    "sheet_slide": "Cart and item details should slide up from bottom like a native mobile bottom sheet."
+  },
+  "media": {
+    "images": [
+      {
+        "url": "https://images.unsplash.com/photo-1745455782861-43334c2d036f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBwaGFybWFjeSUyMHN0b3JlJTIwaW50ZXJpb3J8ZW58MHx8fHwxNzc3MzcyMjMzfDA&ixlib=rb-4.1.0&q=85",
+        "category": "background_login",
+        "description": "Futuristic white pharmacy interior. Use as a blurred background or header background with a heavy white/green gradient overlay for the login screen."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1533079299928-78eb7250f457?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHw0fHxtZWRpY2luZSUyMGJveGVzJTIwcGlsbHN8ZW58MHx8fHwxNzc3MzcyMjMzfDA&ixlib=rb-4.1.0&q=85",
+        "category": "inventory_placeholder",
+        "description": "Blister pack on drawer. Use as a thumbnail for generic medicines in the inventory list."
+      },
+      {
+        "url": "https://images.pexels.com/photos/3873163/pexels-photo-3873163.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "category": "medicine_placeholder",
+        "description": "Close-up of pills. Use as product thumbnail in the Suppliers/Wholesalers marketplace."
+      }
+    ]
+  },
+  "testing_attributes": {
+    "rules": "All interactive elements MUST include a data-testid attribute in kebab-case representing their role.",
+    "examples": [
+      "data-testid='login-submit-button'",
+      "data-testid='home-sell-tile'",
+      "data-testid='sell-cart-checkout'",
+      "data-testid='inventory-create-order'",
+      "data-testid='scanner-camera-view'"
+    ]
+  },
+  "instructions_to_main_agent": [
+    "You are building a web-based responsive app mimicking a mobile POS. Wrap the main App in a container with 'max-w-md mx-auto shadow-2xl overflow-hidden min-h-screen' to give it a mobile frame on desktop.",
+    "CRITICAL: Set 'dir=\"rtl\"' on the root HTML or body tag.",
+    "Install Google Font 'Cairo' for Arabic text rendering. Update tailwind.config.js to include it in the sans font family.",
+    "For the barcode scanner on Sell/Buy screens, use a mocked UI: a black rectangle with a pulsing green line and a 'Simulate Scan' button below it to immediately add a mock item to the cart.",
+    "Use Phosphor Icons (@phosphor-icons/react) for sharp, professional medical and UI icons.",
+    "Replace all padding/margin left and right utilities (e.g., pl-, pr-, ml-, mr-) with inline-start and inline-end (ps-, pe-, ms-, me-) for strict RTL compliance.",
+    "The UI should feel cheerful, fast, and highly legible. Use large text sizes and generous spacing for touch targets."
+  ]
+}
