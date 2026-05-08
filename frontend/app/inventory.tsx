@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Alert, TextInput, Linking, Platform, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useAuth, apiFetch } from '../src/auth';
 import { colors } from '../src/theme';
 import ScreenHeader from '../src/ScreenHeader';
@@ -12,6 +12,7 @@ type OrderRow = { id: string; name: string; quantity: number };
 
 export default function Inventory() {
   const { token } = useAuth();
+  const router = useRouter();
   const [meds, setMeds] = useState<Med[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
