@@ -1,0 +1,271 @@
+import { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Linking, Platform } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useAuth, apiFetch } from '../src/auth';
+import { colors } from '../src/theme';
+import ScreenHeader from '../src/ScreenHeader';
+
+type SupplierGroup = {
+  supplier_id: string;
+  supplier_name: string;
+  supplier_phone?: string;
+  items: { name: string; quantity: number; unit_price: number; line_total: number }[];
+  total: number;
+};
+
+type OptimizeResult = {
+  unavailable: string[];
+  per_item: { plan: any[]; total: number; savings_vs_max: number };
+  single_supplier: { options: SupplierGroup[]; best: SupplierGroup | null; savings_vs_max: number };
+  smart_split: { groups: SupplierGroup[]; items_summary: any[]; total: number; savings_vs_max: number };
+  summary: { cheapest_total: number; most_expensive_total: number; max_savings: number };
+};
+
+const fmt = (n: number) => Math.round(n).toLocaleString();
+
+export default function Optimize() {
+  const { token } = useAuth();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ items?: string }>();
+  const [loading, setLoading] = useState(true);
+  const [result, setResult] = useState<OptimizeResult | null>(null);
+  const [tab, setTab] = useState<'split' | 'single'>('split');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const items = params.items ? JSON.parse(params.items as string) : [];
+        if (!items.length) {
+          Alert.alert('فارغ', 'لا توجد أدوية لتحليلها');
+          router.back();
+          return;
+        }
+        const res: OptimizeResult = await apiFetch('/orders/optimize', {
+          method: 'POST',
+          body: JSON.stringify({ items }),
+        }, token);
+        setResult(res);
+      } catch (e: any) {
+        Alert.alert('خطأ', e.message || 'فشل التحليل');
+        router.back();
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const sendWhatsApp = (group: SupplierGroup) => {
+    const lines = group.items.map((it, i) => `${i + 1}. ${it.name} × ${it.quantity} = ${fmt(it.line_total)} د.ع`).join('\n');
+    const msg = `طلبية:\n\n${lines}\n\nالمجموع: ${fmt(group.total)} د.ع`;
+    const phone = (group.supplier_phone || '').replace(/[^\d]/g, '');
+    const url = phone ? `https://wa.me/${phone}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+    Linking.openURL(url);
+  };
+
+  const copyAll = (groups: SupplierGroup[]) => {
+    const txt = groups.map(g => {
+      const lines = g.items.map((it, i) => `${i + 1}. ${it.name} × ${it.quantity}`).join('\n');
+      return `📦 ${g.supplier_name}\n${lines}\nالمجموع: ${fmt(g.total)} د.ع`;
+    }).join('\n\n──────────\n\n');
+    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(txt);
+    }
+    Alert.alert('تم النسخ', 'يمكنك لصق النص الآن أو أخذ لقطة شاشة');
+  };
+
+  if (loading) {
+    return <SafeAreaView style={styles.safe}><View style={styles.center}><ActivityIndicator color={colors.primary} size="large" /><Text style={styles.loadTxt}>جاري المقارنة بين المذاخر...</Text></View></SafeAreaView>;
+  }
+
+  if (!result) return null;
+
+  const split = result.smart_split;
+  const single = result.single_supplier;
+  const summary = result.summary;
+  const noOffers = !split.groups.length && !single.options.length;
+
+  return (
+    <SafeAreaView style={styles.safe}>
+      <ScreenHeader title="اقتراح أفضل سعر" subtitle="مقارنة بين المذاخر" />
+
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+        {/* Savings highlight */}
+        {summary.max_savings > 0 && (
+          <View style={styles.savingsCard}>
+            <View style={styles.savingsIcon}><Ionicons name="trending-down" size={26} color="#fff" /></View>
+            <View style={{ flex: 1, alignItems: 'flex-end' }}>
+              <Text style={styles.savingsLabel}>التوفير المحتمل</Text>
+              <Text style={styles.savingsValue} testID="max-savings">{fmt(summary.max_savings)} د.ع</Text>
+            </View>
+          </View>
+        )}
+
+        {result.unavailable.length > 0 && (
+          <View style={styles.warnCard} testID="unavailable-warn">
+            <Ionicons name="warning" size={20} color={colors.warning} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.warnTitle}>أدوية غير متوفرة عند أي مذخر:</Text>
+              <Text style={styles.warnList}>{result.unavailable.join('، ')}</Text>
+            </View>
+          </View>
+        )}
+
+        {noOffers ? (
+          <View style={styles.empty}>
+            <Ionicons name="search" size={64} color={colors.textMuted} />
+            <Text style={styles.emptyTxt}>لا توجد عروض مطابقة من المذاخر حالياً</Text>
+          </View>
+        ) : (
+          <>
+            {/* Tabs */}
+            <View style={styles.tabs}>
+              <TouchableOpacity
+                testID="tab-split"
+                style={[styles.tab, tab === 'split' && styles.tabActive]}
+                onPress={() => setTab('split')}
+              >
+                <Ionicons name="git-branch" size={16} color={tab === 'split' ? '#fff' : colors.textSecondary} />
+                <Text style={[styles.tabTxt, tab === 'split' && styles.tabTxtActive]}>تقسيم ذكي</Text>
+                {split.groups.length > 0 && <Text style={[styles.tabBadge, tab === 'split' && styles.tabBadgeActive]}>{fmt(split.total)}</Text>}
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="tab-single"
+                style={[styles.tab, tab === 'single' && styles.tabActive]}
+                onPress={() => setTab('single')}
+              >
+                <Ionicons name="business" size={16} color={tab === 'single' ? '#fff' : colors.textSecondary} />
+                <Text style={[styles.tabTxt, tab === 'single' && styles.tabTxtActive]}>مذخر واحد</Text>
+                {single.best && <Text style={[styles.tabBadge, tab === 'single' && styles.tabBadgeActive]}>{fmt(single.best.total)}</Text>}
+              </TouchableOpacity>
+            </View>
+
+            {tab === 'split' ? (
+              <SplitView groups={split.groups} total={split.total} savings={split.savings_vs_max} onSend={sendWhatsApp} onCopy={() => copyAll(split.groups)} />
+            ) : (
+              <SingleSupplierView options={single.options} onSend={sendWhatsApp} />
+            )}
+          </>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function SplitView({ groups, total, savings, onSend, onCopy }: { groups: SupplierGroup[]; total: number; savings: number; onSend: (g: SupplierGroup) => void; onCopy: () => void }) {
+  if (!groups.length) return <Text style={styles.emptyTxt}>لا يوجد عرض تقسيم</Text>;
+  return (
+    <View style={{ gap: 12 }}>
+      <View style={styles.totalCard}>
+        <Text style={styles.totalLabel}>المجموع الكلي</Text>
+        <Text style={styles.totalValue} testID="split-total">{fmt(total)} د.ع</Text>
+        {savings > 0 && <Text style={styles.savePill}>توفير {fmt(savings)} د.ع</Text>}
+      </View>
+
+      <TouchableOpacity testID="btn-copy-all" style={styles.copyBtn} onPress={onCopy}>
+        <Ionicons name="copy-outline" size={18} color={colors.secondaryDark} />
+        <Text style={styles.copyTxt}>نسخ الكل (لقطة شاشة)</Text>
+      </TouchableOpacity>
+
+      {groups.map(g => (
+        <SupplierCard key={g.supplier_id} group={g} onSend={onSend} />
+      ))}
+    </View>
+  );
+}
+
+function SingleSupplierView({ options, onSend }: { options: SupplierGroup[]; onSend: (g: SupplierGroup) => void }) {
+  if (!options.length) {
+    return (
+      <View style={styles.empty}>
+        <Ionicons name="information-circle" size={48} color={colors.textMuted} />
+        <Text style={styles.emptyTxt}>لا يوجد مذخر يملك جميع الأدوية. جرّب التقسيم الذكي.</Text>
+      </View>
+    );
+  }
+  return (
+    <View style={{ gap: 12 }}>
+      {options.map((g, i) => (
+        <View key={g.supplier_id}>
+          {i === 0 && <View style={styles.bestBadge}><Ionicons name="star" size={12} color="#fff" /><Text style={styles.bestTxt}>الأرخص</Text></View>}
+          <SupplierCard group={g} onSend={onSend} highlight={i === 0} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function SupplierCard({ group, onSend, highlight }: { group: SupplierGroup; onSend: (g: SupplierGroup) => void; highlight?: boolean }) {
+  return (
+    <View style={[styles.card, highlight && styles.cardHighlight]} testID={`supplier-card-${group.supplier_id}`}>
+      <View style={styles.cardHead}>
+        <View style={{ flex: 1, alignItems: 'flex-end' }}>
+          <Text style={styles.supplierName}>{group.supplier_name}</Text>
+          <Text style={styles.supplierTotal}>{fmt(group.total)} د.ع</Text>
+        </View>
+        <View style={styles.supplierIcon}><Ionicons name="storefront" size={22} color={colors.indigo} /></View>
+      </View>
+
+      <View style={styles.itemsList}>
+        {group.items.map((it, idx) => (
+          <View key={idx} style={styles.itemRow}>
+            <Text style={styles.itemTotal}>{fmt(it.line_total)} د.ع</Text>
+            <View style={{ flex: 1, alignItems: 'flex-end' }}>
+              <Text style={styles.itemName}>{it.name}</Text>
+              <Text style={styles.itemSub}>{it.quantity} × {fmt(it.unit_price)} د.ع</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+
+      <TouchableOpacity testID={`btn-whatsapp-${group.supplier_id}`} style={styles.waBtn} onPress={() => onSend(group)}>
+        <Ionicons name="logo-whatsapp" size={20} color="#fff" />
+        <Text style={styles.waTxt}>إرسال لـ {group.supplier_name} عبر واتساب</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.background },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  loadTxt: { color: colors.textSecondary, fontSize: 14 },
+  savingsCard: { backgroundColor: colors.primary, borderRadius: 18, padding: 16, flexDirection: 'row-reverse', alignItems: 'center', gap: 12, marginBottom: 12 },
+  savingsIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
+  savingsLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 12 },
+  savingsValue: { color: '#fff', fontWeight: '900', fontSize: 22 },
+  warnCard: { backgroundColor: colors.warningLight, borderRadius: 14, padding: 12, flexDirection: 'row-reverse', gap: 10, alignItems: 'flex-start', marginBottom: 12 },
+  warnTitle: { color: colors.warning, fontWeight: '800', textAlign: 'right', fontSize: 13 },
+  warnList: { color: colors.textSecondary, textAlign: 'right', fontSize: 12, marginTop: 4 },
+  empty: { alignItems: 'center', justifyContent: 'center', padding: 30, gap: 10 },
+  emptyTxt: { color: colors.textSecondary, textAlign: 'center', fontSize: 14 },
+  tabs: { flexDirection: 'row-reverse', backgroundColor: colors.surface, borderRadius: 14, padding: 4, marginBottom: 12, borderWidth: 1, borderColor: colors.border },
+  tab: { flex: 1, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, gap: 6, borderRadius: 10 },
+  tabActive: { backgroundColor: colors.primary },
+  tabTxt: { color: colors.textSecondary, fontWeight: '700' },
+  tabTxtActive: { color: '#fff' },
+  tabBadge: { color: colors.textMuted, fontSize: 11, fontWeight: '700' },
+  tabBadgeActive: { color: 'rgba(255,255,255,0.85)' },
+  totalCard: { backgroundColor: colors.surface, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: colors.border, alignItems: 'flex-end' },
+  totalLabel: { color: colors.textSecondary, fontSize: 12 },
+  totalValue: { color: colors.primary, fontWeight: '900', fontSize: 22, marginTop: 2 },
+  savePill: { backgroundColor: colors.primaryLight, color: colors.primaryDark, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 8, fontSize: 12, fontWeight: '800', marginTop: 6, overflow: 'hidden' },
+  copyBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10, borderRadius: 10, backgroundColor: colors.secondaryLight },
+  copyTxt: { color: colors.secondaryDark, fontWeight: '800' },
+  card: { backgroundColor: colors.surface, borderRadius: 18, padding: 14, borderWidth: 1, borderColor: colors.border },
+  cardHighlight: { borderColor: colors.primary, borderWidth: 2 },
+  cardHead: { flexDirection: 'row-reverse', alignItems: 'center', gap: 10, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
+  supplierIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.indigoLight, alignItems: 'center', justifyContent: 'center' },
+  supplierName: { fontSize: 16, fontWeight: '800', color: colors.textPrimary, textAlign: 'right' },
+  supplierTotal: { color: colors.primary, fontWeight: '900', fontSize: 17 },
+  itemsList: { paddingVertical: 8, gap: 6 },
+  itemRow: { flexDirection: 'row-reverse', alignItems: 'center' },
+  itemName: { color: colors.textPrimary, textAlign: 'right', fontWeight: '700', fontSize: 14 },
+  itemSub: { color: colors.textMuted, fontSize: 12, textAlign: 'right' },
+  itemTotal: { color: colors.secondaryDark, fontWeight: '800', fontSize: 13, marginLeft: 8 },
+  waBtn: { backgroundColor: '#25D366', borderRadius: 12, paddingVertical: 12, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8 },
+  waTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
+  bestBadge: { position: 'absolute', top: -2, right: 14, zIndex: 1, backgroundColor: colors.primary, flexDirection: 'row-reverse', gap: 4, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, alignItems: 'center' },
+  bestTxt: { color: '#fff', fontSize: 11, fontWeight: '800' },
+});

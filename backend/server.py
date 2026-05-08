@@ -146,8 +146,11 @@ class SupplierProduct(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     supplier_id: str
     supplier_name: str
+    supplier_phone: Optional[str] = None
     name: str
     price: float
+    quantity: int = 0
+    delivery_time: Optional[str] = None
     image_base64: Optional[str] = None
     description: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -156,8 +159,14 @@ class SupplierProduct(BaseModel):
 class SupplierProductCreate(BaseModel):
     name: str
     price: float
+    quantity: int = 0
+    delivery_time: Optional[str] = None
     image_base64: Optional[str] = None
     description: Optional[str] = None
+
+
+class OptimizeRequest(BaseModel):
+    items: List[OrderItem]
 
 
 # ---------- Auth - Pharmacy ----------
@@ -385,11 +394,199 @@ async def add_supplier_product(data: SupplierProductCreate, user: dict = Depends
     supplier = await db.suppliers.find_one({"id": user["sub"]}, {"_id": 0})
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
-    prod = SupplierProduct(supplier_id=user["sub"], supplier_name=supplier["name"], **data.dict())
+    prod = SupplierProduct(
+        supplier_id=user["sub"],
+        supplier_name=supplier["name"],
+        supplier_phone=supplier.get("phone"),
+        **data.dict(),
+    )
     doc = prod.dict()
     doc["created_at"] = doc["created_at"].isoformat()
     await db.supplier_products.insert_one(doc.copy())
     return doc
+
+
+@api_router.post("/orders/optimize")
+async def optimize_order(data: OptimizeRequest, user: dict = Depends(require_role("pharmacy"))):
+    """
+    Compute price-optimal supplier plans for a basket.
+    Returns:
+      - per_item: cheapest supplier per item (greedy global optimum without fixed costs)
+      - single_supplier: ranked list of suppliers that can fully fulfill the basket
+      - smart_split: greedy per-item, supports splitting one item across suppliers
+                     when single-supplier qty is insufficient
+      - unavailable: items no supplier has
+      - savings: vs the most expensive option
+    """
+    products = await db.supplier_products.find({}, {"_id": 0}).to_list(5000)
+
+    def matches(query: str, name: str) -> bool:
+        q = (query or "").strip().lower()
+        n = (name or "").strip().lower()
+        if not q or not n:
+            return False
+        return q == n or q in n or n in q
+
+    # ---- For each requested item, gather supplier offers (sorted by price asc) ----
+    per_item_options: list[dict] = []
+    unavailable: list[str] = []
+    for it in data.items:
+        offers = []
+        for p in products:
+            if matches(it.name, p["name"]):
+                offers.append({
+                    "product_id": p["id"],
+                    "supplier_id": p["supplier_id"],
+                    "supplier_name": p["supplier_name"],
+                    "supplier_phone": p.get("supplier_phone"),
+                    "matched_name": p["name"],
+                    "price": float(p.get("price") or 0),
+                    "available_qty": int(p.get("quantity") or 0),
+                    "delivery_time": p.get("delivery_time"),
+                })
+        offers.sort(key=lambda x: x["price"])
+        if not offers:
+            unavailable.append(it.name)
+        per_item_options.append({"name": it.name, "quantity": it.quantity, "offers": offers})
+
+    # ---- Plan 1: Per-item cheapest (ignore qty constraints) ----
+    per_item_plan = []
+    per_item_total = 0.0
+    for opt in per_item_options:
+        if not opt["offers"]:
+            continue
+        best = opt["offers"][0]
+        line_total = best["price"] * opt["quantity"]
+        per_item_total += line_total
+        per_item_plan.append({
+            "name": opt["name"],
+            "quantity": opt["quantity"],
+            "supplier_id": best["supplier_id"],
+            "supplier_name": best["supplier_name"],
+            "supplier_phone": best.get("supplier_phone"),
+            "unit_price": best["price"],
+            "line_total": line_total,
+        })
+
+    # ---- Plan 2: Single supplier (each must have ALL items, ignore qty) ----
+    single_supplier = []
+    suppliers_by_id: dict[str, dict] = {}
+    for p in products:
+        suppliers_by_id.setdefault(p["supplier_id"], {
+            "supplier_id": p["supplier_id"],
+            "supplier_name": p["supplier_name"],
+            "supplier_phone": p.get("supplier_phone"),
+        })
+    for sid, sinfo in suppliers_by_id.items():
+        items_for_supplier = []
+        ok = True
+        total = 0.0
+        for opt in per_item_options:
+            match = next((o for o in opt["offers"] if o["supplier_id"] == sid), None)
+            if not match:
+                ok = False
+                break
+            line = match["price"] * opt["quantity"]
+            total += line
+            items_for_supplier.append({
+                "name": opt["name"],
+                "quantity": opt["quantity"],
+                "unit_price": match["price"],
+                "line_total": line,
+            })
+        if ok and items_for_supplier:
+            single_supplier.append({
+                **sinfo,
+                "items": items_for_supplier,
+                "total": total,
+            })
+    single_supplier.sort(key=lambda x: x["total"])
+
+    # ---- Plan 3: Smart split (greedy per item, may split one item across suppliers if qty insufficient) ----
+    # Group fulfillment per supplier so we can send one WhatsApp per supplier
+    split_by_supplier: dict[str, dict] = {}
+    smart_total = 0.0
+    smart_items_summary = []
+    for opt in per_item_options:
+        remaining = opt["quantity"]
+        item_breakdown = []
+        for offer in opt["offers"]:
+            if remaining <= 0:
+                break
+            avail = offer["available_qty"] if offer["available_qty"] > 0 else remaining
+            take = min(avail, remaining)
+            if take <= 0:
+                continue
+            line = offer["price"] * take
+            smart_total += line
+            remaining -= take
+            sid = offer["supplier_id"]
+            grp = split_by_supplier.setdefault(sid, {
+                "supplier_id": sid,
+                "supplier_name": offer["supplier_name"],
+                "supplier_phone": offer.get("supplier_phone"),
+                "items": [],
+                "total": 0.0,
+            })
+            grp["items"].append({
+                "name": opt["name"],
+                "quantity": take,
+                "unit_price": offer["price"],
+                "line_total": line,
+            })
+            grp["total"] += line
+            item_breakdown.append({
+                "supplier_id": sid,
+                "supplier_name": offer["supplier_name"],
+                "quantity": take,
+                "unit_price": offer["price"],
+            })
+        smart_items_summary.append({
+            "name": opt["name"],
+            "requested_quantity": opt["quantity"],
+            "fulfilled_quantity": opt["quantity"] - remaining,
+            "missing_quantity": remaining,
+            "breakdown": item_breakdown,
+        })
+
+    smart_split_groups = sorted(split_by_supplier.values(), key=lambda x: -x["total"])
+
+    # ---- Savings ----
+    candidates = []
+    if per_item_plan:
+        candidates.append(per_item_total)
+    if single_supplier:
+        candidates.append(single_supplier[0]["total"])
+    if smart_split_groups:
+        candidates.append(smart_total)
+
+    most_expensive = max(candidates) if candidates else 0
+    cheapest = min(candidates) if candidates else 0
+
+    return {
+        "unavailable": unavailable,
+        "per_item": {
+            "plan": per_item_plan,
+            "total": per_item_total,
+            "savings_vs_max": round(most_expensive - per_item_total, 2),
+        },
+        "single_supplier": {
+            "options": single_supplier,
+            "best": single_supplier[0] if single_supplier else None,
+            "savings_vs_max": round(most_expensive - single_supplier[0]["total"], 2) if single_supplier else 0,
+        },
+        "smart_split": {
+            "groups": smart_split_groups,
+            "items_summary": smart_items_summary,
+            "total": round(smart_total, 2),
+            "savings_vs_max": round(most_expensive - smart_total, 2) if smart_split_groups else 0,
+        },
+        "summary": {
+            "cheapest_total": cheapest,
+            "most_expensive_total": most_expensive,
+            "max_savings": round(most_expensive - cheapest, 2),
+        },
+    }
 
 
 @api_router.delete("/supplier/products/{product_id}")

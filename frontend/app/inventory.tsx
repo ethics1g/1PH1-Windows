@@ -152,10 +152,23 @@ export default function Inventory() {
               )}
             />
           </View>
-          <TouchableOpacity testID="btn-create-order" style={styles.createOrderBtn} onPress={createOrder}>
-            <Ionicons name="paper-plane" size={20} color="#fff" />
-            <Text style={styles.createOrderTxt}>إنشاء طلبية</Text>
-          </TouchableOpacity>
+          <View style={styles.actionsRow}>
+            <TouchableOpacity
+              testID="btn-optimize"
+              style={[styles.actionBtn, styles.optimizeBtn]}
+              onPress={() => {
+                const items = order.map(o => ({ name: o.name, quantity: o.quantity }));
+                router.push({ pathname: '/optimize', params: { items: JSON.stringify(items) } } as any);
+              }}
+            >
+              <Ionicons name="sparkles" size={18} color="#fff" />
+              <Text style={styles.actionTxt}>أفضل سعر</Text>
+            </TouchableOpacity>
+            <TouchableOpacity testID="btn-create-order" style={[styles.actionBtn, styles.sendBtn]} onPress={createOrder}>
+              <Ionicons name="paper-plane" size={18} color="#fff" />
+              <Text style={styles.actionTxt}>إرسال مباشر</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
     </SafeAreaView>
@@ -183,6 +196,11 @@ const styles = StyleSheet.create({
   qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 8, marginLeft: 10 },
   qtyBtn: { width: 26, height: 26, borderRadius: 13, backgroundColor: colors.background, alignItems: 'center', justifyContent: 'center' },
   qtyTxt: { fontWeight: '800', minWidth: 18, textAlign: 'center' },
+  actionsRow: { flexDirection: 'row-reverse', gap: 8 },
+  actionBtn: { flex: 1, borderRadius: 14, paddingVertical: 13, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  optimizeBtn: { backgroundColor: colors.indigo },
+  sendBtn: { backgroundColor: colors.primary },
+  actionTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
   createOrderBtn: { backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 13, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 8 },
   createOrderTxt: { color: '#fff', fontWeight: '800', fontSize: 16 },
 });

@@ -17,6 +17,7 @@ export default function RootLayout() {
           <Stack.Screen name="inventory" />
           <Stack.Screen name="suppliers" />
           <Stack.Screen name="supplier-dashboard" />
+          <Stack.Screen name="optimize" />
         </Stack>
       </AuthProvider>
     </SafeAreaProvider>

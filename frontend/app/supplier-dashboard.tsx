@@ -16,6 +16,8 @@ export default function SupplierDashboard() {
   const router = useRouter();
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
+  const [quantity, setQuantity] = useState('');
+  const [deliveryTime, setDeliveryTime] = useState('');
   const [description, setDescription] = useState('');
   const [items, setItems] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,9 +44,15 @@ export default function SupplierDashboard() {
     try {
       await apiFetch('/supplier/products', {
         method: 'POST',
-        body: JSON.stringify({ name: name.trim(), price: parseFloat(price) || 0, description: description.trim() || null }),
+        body: JSON.stringify({
+          name: name.trim(),
+          price: parseFloat(price) || 0,
+          quantity: parseInt(quantity) || 0,
+          delivery_time: deliveryTime.trim() || null,
+          description: description.trim() || null,
+        }),
       }, token);
-      setName(''); setPrice(''); setDescription('');
+      setName(''); setPrice(''); setQuantity(''); setDeliveryTime(''); setDescription('');
       await load();
       Alert.alert('تم', 'تمت إضافة المنتج');
     } catch (e: any) {
@@ -81,6 +89,10 @@ export default function SupplierDashboard() {
             <Text style={styles.formTitle}>إضافة منتج جديد</Text>
             <TextInput testID="sup-name" style={styles.input} value={name} onChangeText={setName} placeholder="اسم الدواء" placeholderTextColor={colors.textMuted} textAlign="right" />
             <TextInput testID="sup-price" style={styles.input} value={price} onChangeText={setPrice} placeholder="السعر (د.ع)" placeholderTextColor={colors.textMuted} keyboardType="numeric" textAlign="right" />
+            <View style={{ flexDirection: 'row-reverse', gap: 10 }}>
+              <TextInput testID="sup-quantity" style={[styles.input, { flex: 1 }]} value={quantity} onChangeText={setQuantity} placeholder="الكمية المتاحة" placeholderTextColor={colors.textMuted} keyboardType="numeric" textAlign="right" />
+              <TextInput testID="sup-delivery" style={[styles.input, { flex: 1 }]} value={deliveryTime} onChangeText={setDeliveryTime} placeholder="وقت التوصيل (مثال: 24 ساعة)" placeholderTextColor={colors.textMuted} textAlign="right" />
+            </View>
             <TextInput testID="sup-desc" style={[styles.input, { height: 70 }]} value={description} onChangeText={setDescription} placeholder="وصف اختياري" placeholderTextColor={colors.textMuted} multiline textAlign="right" />
             <TouchableOpacity testID="btn-add-product" style={styles.addBtn} onPress={addProduct} disabled={busy}>
               {busy ? <ActivityIndicator color="#fff" /> : <><Ionicons name="add-circle" size={22} color="#fff" /><Text style={styles.addBtnTxt}>إضافة</Text></>}
