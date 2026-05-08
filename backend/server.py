@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import re
 import logging
 import uuid
 import hashlib
@@ -420,12 +421,35 @@ async def optimize_order(data: OptimizeRequest, user: dict = Depends(require_rol
     """
     products = await db.supplier_products.find({}, {"_id": 0}).to_list(5000)
 
+    # ---- Arabic-aware word-boundary matcher ----
+    _DIACRITICS = re.compile(r'[\u064B-\u0652\u0670\u0640]')
+
+    def _normalize(s: str) -> str:
+        s = (s or "").strip().lower()
+        s = _DIACRITICS.sub('', s)
+        s = s.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+        s = s.replace('ى', 'ي').replace('ئ', 'ي').replace('ؤ', 'و')
+        s = s.replace('ة', 'ه')
+        return s
+
+    def _tokens(s: str) -> set[str]:
+        return {t for t in re.findall(r'\w+', s, flags=re.UNICODE) if len(t) >= 2}
+
     def matches(query: str, name: str) -> bool:
-        q = (query or "").strip().lower()
-        n = (name or "").strip().lower()
+        q = _normalize(query)
+        n = _normalize(name)
         if not q or not n:
             return False
-        return q == n or q in n or n in q
+        if q == n:
+            return True
+        # Token overlap of length >= 3 prevents short false positives (e.g. "أدول" vs "بنادول")
+        shared = _tokens(q) & _tokens(n)
+        if any(len(t) >= 3 for t in shared):
+            return True
+        # Substring fallback only for long queries (>= 6 chars) — supports concatenated names
+        if len(q) >= 6 and (q in n or n in q):
+            return True
+        return False
 
     # ---- For each requested item, gather supplier offers (sorted by price asc) ----
     per_item_options: list[dict] = []
