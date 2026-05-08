@@ -265,7 +265,7 @@ async def process_import_job(db, job_id: str) -> None:
         review_count = 0
         for ck, it in dedup.items():
             match, conf = await smart_match(ck, candidates, corrections)
-            status_ = "auto" if conf >= 0.90 else ("needs_review" if conf >= 0.55 or match else "needs_review")
+            status_ = "auto" if conf >= 0.90 else "needs_review"
             if status_ == "needs_review":
                 review_count += 1
             items_to_insert.append({

@@ -34,8 +34,23 @@ Arabic (RTL) mobile app for pharmacies and wholesale suppliers ("مذاخر"). G
 - `POST /api/medicines/buy` (adds/updates inventory)
 - `POST /api/medicines/identify` (image base64 → name)
 - `POST/GET /api/orders`
-- `POST /api/orders/optimize` ⭐ NEW — Smart Multi-Pharmacy Price Optimization
-- `GET/POST/DELETE /api/supplier/products` (now supports `quantity` + `delivery_time`), `GET /api/marketplace`
+- `POST /api/orders/optimize` — Smart Multi-Pharmacy Price Optimization
+- `GET/POST/DELETE /api/supplier/products`, `GET /api/marketplace`
+- `POST /api/supplier/catalog/upload` ⭐ NEW — AI Catalog Import (PDF/Image)
+- `GET /api/supplier/catalog/jobs`, `GET /api/supplier/catalog/jobs/{id}`
+- `PATCH /api/supplier/catalog/items/{id}` (edit/approve/reject + saves correction)
+- `POST /api/supplier/catalog/jobs/{id}/publish` (publishes auto+approved items)
+
+## AI Supplier Catalog Import (new)
+Suppliers upload a PDF/image price-list. Backend pipeline (async via FastAPI BackgroundTasks):
+1. PDF → page-images via `pypdfium2` (max 12 pages); image → JPEG normalize
+2. Each page → Gemini 3 Flash with JSON schema → list of {name, strength, dosage_form, manufacturer, price, quantity}
+3. Arabic-aware normalization + dedupe within batch
+4. Smart matching: corrections lookup → RapidFuzz token_set → if ambiguous (55-90% conf) call Gemini "are these same drug?" (the "switching" layer)
+5. Items with conf ≥ 0.90 auto-approved; else flagged `needs_review`
+6. Frontend review screen lets supplier edit/approve/reject; corrections are saved to `catalog_corrections` for self-improving matching
+7. Publish pushes auto+approved to `supplier_products` (existing names → update, new → insert)
+Collections: `import_jobs`, `import_items`, `catalog_corrections`
 
 ## Smart Split Optimization (new)
 Pharmacy can tap **"اقتراح أفضل سعر"** in inventory after building an order. Backend computes 3 plans:
