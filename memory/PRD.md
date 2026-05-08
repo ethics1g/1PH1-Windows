@@ -34,4 +34,12 @@ Arabic (RTL) mobile app for pharmacies and wholesale suppliers ("مذاخر"). G
 - `POST /api/medicines/buy` (adds/updates inventory)
 - `POST /api/medicines/identify` (image base64 → name)
 - `POST/GET /api/orders`
-- `GET/POST/DELETE /api/supplier/products`, `GET /api/marketplace`
+- `POST /api/orders/optimize` ⭐ NEW — Smart Multi-Pharmacy Price Optimization
+- `GET/POST/DELETE /api/supplier/products` (now supports `quantity` + `delivery_time`), `GET /api/marketplace`
+
+## Smart Split Optimization (new)
+Pharmacy can tap **"اقتراح أفضل سعر"** in inventory after building an order. Backend computes 3 plans:
+- **per_item**: cheapest supplier per item (ignores qty)
+- **single_supplier**: ranked list of suppliers that have ALL items
+- **smart_split**: greedy per-item that splits one item across multiple suppliers when stock is insufficient (honors `quantity`; `0` = unlimited)
+Frontend `/optimize` screen shows tabs (تقسيم ذكي / مذخر واحد) + per-supplier WhatsApp send button (`wa.me/<phone>`) + "نسخ الكل" for screenshot. Items not offered by any supplier are flagged.
