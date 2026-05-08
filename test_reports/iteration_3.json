@@ -1,0 +1,39 @@
+{
+  "summary": "Backend testing of AI Supplier Catalog Import. All 14 new tests pass + all 42 prior tests still green (56/56 total). Validated: role-guards (pharmacy 403 on /api/supplier/catalog/*), upload validation (empty 400, 13MB rejected with 413), full pipeline (upload -> background processing -> review state), jobs list/detail exclude file_b64, PATCH creates catalog_corrections record when approved_name differs from suggested_canonical_name, invalid match_status rejected with 400, publish skips rejected items and only publishes auto/approved, published items appear in /api/marketplace and /api/supplier/products, re-publish is idempotent (updates existing instead of duplicating), job status transitions to 'published' with published_count.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "process_import_job (catalog_import.py:268)", "issue": "Logic chain `'auto' if conf >= 0.90 else ('needs_review' if conf >= 0.55 or match else 'needs_review')` always evaluates the second branch to 'needs_review' regardless - dead expression. Behaviour is correct, but the conditional is redundant and confusing."},
+      {"endpoint": "/api/supplier/catalog/upload", "issue": "Backend log shows Gemini gemini-3-flash-preview returns API_KEY_INVALID (gemini key). Pipeline tolerates this (returns 0 items, status 'review'), but real extractions will fail until the EMERGENT_LLM_KEY / Gemini key is fixed. Not blocking the plumbing tests."},
+      {"endpoint": "/api/supplier/catalog/jobs/{id}/publish", "issue": "Allows republishing a job already in 'published' state (status check uses ('review','published')). Acceptable, but consider blocking duplicate publishes or returning an indication of no-op."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_catalog_import.py",
+    "/app/test_reports/pytest/pytest_catalog_results.xml"
+  ],
+  "action_items": [
+    "Investigate Gemini API_KEY_INVALID errors in backend logs (real extraction returns 0 items). EMERGENT_LLM_KEY may not have access to gemini-3-flash-preview model, or model name needs verification.",
+    "Optional cleanup: simplify the `'needs_review' if conf >= 0.55 or match else 'needs_review'` ternary in catalog_import.py (always returns 'needs_review' on the else branch)."
+  ],
+  "critical_code_review_comments": [
+    "catalog_import.py decode_to_page_images caps PDFs at 12 pages - good safety, but no explicit error if PDF >12 pages (silently truncates).",
+    "publish_job: when an existing product is updated, only price+quantity are touched; description/strength changes from new extraction are ignored. May or may not be intended.",
+    "import_jobs collection retains file_b64 for the duration of processing (could be 30s+ at 12MB). For high-volume suppliers this may pressure MongoDB document size limits - consider streaming to GridFS instead."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_catalog_import.py (created)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a"},
+  "seed_data_creation": "Test inserts ephemeral import_jobs / import_items / supplier_products / catalog_corrections rows (all prefixed TEST_*) and removes them in teardown_class. No persistent test pollution.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Catalog tests live in /app/backend/tests/test_catalog_import.py. They auto-fall-back to creating a fresh supplier if 07811111111/sup1 login fails. Direct DB seeding is used to deterministically test PATCH/publish without depending on Gemini extraction quality (real Gemini calls currently fail with API_KEY_INVALID but pipeline still reaches 'review' status with empty items). Total 14 tests run in <10s.",
+  "rca_of_issue": "n/a - no bugs found in tested feature plumbing"
+}

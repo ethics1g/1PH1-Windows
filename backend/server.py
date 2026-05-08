@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, BackgroundTasks
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -12,6 +12,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
+
+import catalog_import
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -630,6 +632,197 @@ async def marketplace(user: dict = Depends(get_current_user)):
 @api_router.get("/")
 async def root():
     return {"message": "Pharmacy Cashier API"}
+
+
+# ---------- Catalog Import (AI) ----------
+class CatalogUploadIn(BaseModel):
+    file_b64: str
+    file_type: str  # "pdf" | "image/jpeg" | "image/png" etc.
+    filename: Optional[str] = None
+
+
+class CatalogItemPatch(BaseModel):
+    extracted_name: Optional[str] = None
+    strength: Optional[str] = None
+    dosage_form: Optional[str] = None
+    manufacturer: Optional[str] = None
+    price: Optional[float] = None
+    quantity: Optional[int] = None
+    approved_name: Optional[str] = None
+    match_status: Optional[str] = None  # "approved" | "rejected"
+
+
+@api_router.post("/supplier/catalog/upload")
+async def catalog_upload(
+    data: CatalogUploadIn,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(require_role("supplier")),
+):
+    if not data.file_b64:
+        raise HTTPException(status_code=400, detail="ملف فارغ")
+    file_size = (len(data.file_b64) * 3) // 4
+    if file_size > 12 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="حجم الملف يتجاوز 12MB")
+    job_id = str(uuid.uuid4())
+    job = {
+        "id": job_id,
+        "supplier_id": user["sub"],
+        "status": "pending",
+        "progress": 0,
+        "file_type": data.file_type,
+        "filename": data.filename,
+        "file_size": file_size,
+        "file_b64": data.file_b64,
+        "total_items": 0,
+        "items_to_review": 0,
+        "page_count": 0,
+        "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": None,
+    }
+    await db.import_jobs.insert_one(job.copy())
+    background_tasks.add_task(catalog_import.process_import_job, db, job_id)
+    return {"job_id": job_id, "status": "pending"}
+
+
+@api_router.get("/supplier/catalog/jobs")
+async def list_jobs(user: dict = Depends(require_role("supplier"))):
+    docs = await db.import_jobs.find(
+        {"supplier_id": user["sub"]},
+        {"_id": 0, "file_b64": 0},
+    ).sort("created_at", -1).to_list(100)
+    return docs
+
+
+@api_router.get("/supplier/catalog/jobs/{job_id}")
+async def get_job(job_id: str, user: dict = Depends(require_role("supplier"))):
+    job = await db.import_jobs.find_one(
+        {"id": job_id, "supplier_id": user["sub"]},
+        {"_id": 0, "file_b64": 0},
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    items = await db.import_items.find({"job_id": job_id}, {"_id": 0}).to_list(5000)
+    grouped = {"auto": [], "needs_review": [], "approved": [], "rejected": []}
+    for it in items:
+        grouped.setdefault(it.get("match_status", "needs_review"), []).append(it)
+    return {"job": job, "items": items, "grouped": grouped}
+
+
+@api_router.patch("/supplier/catalog/items/{item_id}")
+async def patch_item(
+    item_id: str,
+    data: CatalogItemPatch,
+    user: dict = Depends(require_role("supplier")),
+):
+    item = await db.import_items.find_one({"id": item_id}, {"_id": 0})
+    if not item or item.get("supplier_id") != user["sub"]:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    updates: dict = {}
+    extracted = item.get("extracted", {}).copy()
+    if data.extracted_name is not None:
+        extracted["name"] = data.extracted_name
+    if data.strength is not None:
+        extracted["strength"] = data.strength
+    if data.dosage_form is not None:
+        extracted["dosage_form"] = data.dosage_form
+    if data.manufacturer is not None:
+        extracted["manufacturer"] = data.manufacturer
+    if data.price is not None:
+        extracted["price"] = float(data.price)
+    if data.quantity is not None:
+        extracted["quantity"] = int(data.quantity)
+    if extracted != item.get("extracted", {}):
+        updates["extracted"] = extracted
+
+    if data.approved_name is not None:
+        updates["approved_name"] = data.approved_name
+        # Learn the correction so future imports auto-resolve
+        if item.get("canonical_key") and data.approved_name != item.get("suggested_canonical_name"):
+            await db.catalog_corrections.update_one(
+                {"supplier_id": user["sub"], "original_key": item["canonical_key"]},
+                {"$set": {"corrected_name": data.approved_name},
+                 "$inc": {"count": 1}},
+                upsert=True,
+            )
+
+    if data.match_status is not None:
+        if data.match_status not in ("approved", "rejected", "needs_review"):
+            raise HTTPException(status_code=400, detail="Invalid match_status")
+        updates["match_status"] = data.match_status
+
+    if updates:
+        await db.import_items.update_one({"id": item_id}, {"$set": updates})
+
+    fresh = await db.import_items.find_one({"id": item_id}, {"_id": 0})
+    return fresh
+
+
+@api_router.post("/supplier/catalog/jobs/{job_id}/publish")
+async def publish_job(job_id: str, user: dict = Depends(require_role("supplier"))):
+    job = await db.import_jobs.find_one({"id": job_id, "supplier_id": user["sub"]}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") not in ("review", "published"):
+        raise HTTPException(status_code=400, detail="Job not ready to publish")
+
+    supplier = await db.suppliers.find_one({"id": user["sub"]}, {"_id": 0})
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    # Pick all items that are auto-confident OR explicitly approved by user
+    items = await db.import_items.find(
+        {"job_id": job_id, "match_status": {"$in": ["auto", "approved"]}},
+        {"_id": 0},
+    ).to_list(5000)
+
+    created = 0
+    updated = 0
+    for it in items:
+        ext = it.get("extracted", {})
+        name = (it.get("approved_name") or ext.get("name") or "").strip()
+        if not name:
+            continue
+        # If a product with the same name already exists for this supplier, update it
+        existing = await db.supplier_products.find_one(
+            {"supplier_id": user["sub"], "name": name}, {"_id": 0}
+        )
+        if existing:
+            await db.supplier_products.update_one(
+                {"id": existing["id"]},
+                {"$set": {
+                    "price": float(ext.get("price") or existing.get("price", 0)),
+                    "quantity": int(ext.get("quantity") or existing.get("quantity", 0)),
+                }},
+            )
+            updated += 1
+        else:
+            doc = {
+                "id": str(uuid.uuid4()),
+                "supplier_id": user["sub"],
+                "supplier_name": supplier["name"],
+                "supplier_phone": supplier.get("phone"),
+                "name": name,
+                "price": float(ext.get("price") or 0),
+                "quantity": int(ext.get("quantity") or 0),
+                "delivery_time": None,
+                "image_base64": None,
+                "description": " | ".join(filter(None, [
+                    ext.get("strength"), ext.get("dosage_form"), ext.get("manufacturer"),
+                ])) or None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.supplier_products.insert_one(doc.copy())
+            created += 1
+
+    await db.import_jobs.update_one(
+        {"id": job_id},
+        {"$set": {"status": "published",
+                  "published_at": datetime.now(timezone.utc).isoformat(),
+                  "published_count": created + updated}},
+    )
+    return {"created": created, "updated": updated, "total": created + updated}
 
 
 app.include_router(api_router)

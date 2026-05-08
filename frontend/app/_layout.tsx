@@ -18,6 +18,9 @@ export default function RootLayout() {
           <Stack.Screen name="suppliers" />
           <Stack.Screen name="supplier-dashboard" />
           <Stack.Screen name="optimize" />
+          <Stack.Screen name="catalog-upload" />
+          <Stack.Screen name="catalog-jobs" />
+          <Stack.Screen name="catalog-review/[id]" />
         </Stack>
       </AuthProvider>
     </SafeAreaProvider>

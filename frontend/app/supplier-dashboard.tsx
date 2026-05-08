@@ -84,6 +84,22 @@ export default function SupplierDashboard() {
           </TouchableOpacity>
         </View>
 
+        <View style={styles.aiCardWrap}>
+          <TouchableOpacity
+            testID="btn-import-catalog"
+            style={styles.aiCard}
+            activeOpacity={0.85}
+            onPress={() => router.push({ pathname: '/catalog-upload' } as any)}
+          >
+            <View style={styles.aiIcon}><Ionicons name="sparkles" size={26} color="#fff" /></View>
+            <View style={{ flex: 1, alignItems: 'flex-end' }}>
+              <Text style={styles.aiTitle}>استيراد كتالوج بالذكاء الاصطناعي</Text>
+              <Text style={styles.aiSub}>ارفع PDF أو صورة قائمة الأسعار - نستخرج الأدوية تلقائياً</Text>
+            </View>
+            <Ionicons name="chevron-back" size={22} color="#fff" />
+          </TouchableOpacity>
+        </View>
+
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 24 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />}>
           <View style={styles.formCard}>
             <Text style={styles.formTitle}>إضافة منتج جديد</Text>
