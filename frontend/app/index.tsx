@@ -11,6 +11,7 @@ export default function Index() {
   useEffect(() => {
     if (loading) return;
     if (!token) router.replace('/login');
+    else if (role === 'admin') router.replace('/admin/dashboard');
     else if (role === 'pharmacy') router.replace('/home');
     else if (role === 'supplier') router.replace('/supplier-dashboard');
   }, [loading, token, role]);

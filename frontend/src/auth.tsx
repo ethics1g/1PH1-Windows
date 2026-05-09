@@ -1,13 +1,15 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-type UserRole = 'pharmacy' | 'supplier';
+type UserRole = 'pharmacy' | 'supplier' | 'admin';
 
 export type AuthUser = {
   id: string;
-  name: string;
+  name?: string;
   phone: string;
-  address: string;
+  address?: string;
+  email?: string;
+  must_change_password?: boolean;
 };
 
 type AuthState = {

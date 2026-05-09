@@ -198,7 +198,12 @@ async def pharmacy_login(data: LoginInput):
     doc = await db.pharmacies.find_one({"phone": data.phone}, {"_id": 0})
     if not doc or doc["password"] != hash_password(data.password):
         raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
+    if doc.get("disabled"):
+        raise HTTPException(status_code=403, detail="الحساب معطل")
     token = create_token(doc["id"], "pharmacy")
+    await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
+        "actor": {"id": doc["id"], "role": "pharmacy", "phone": data.phone},
+        "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
     return {"token": token, "pharmacy": {"id": doc["id"], "name": doc["name"], "phone": doc["phone"], "address": doc["address"]}}
 
 
@@ -385,6 +390,10 @@ async def reset_password(data: ResetPasswordIn):
         "action": "password_reset_completed",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
+    await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "password_change",
+        "actor": {"id": payload["sub"], "role": payload["role"]},
+        "target": {}, "meta": {"via": "otp"},
+        "timestamp": datetime.now(timezone.utc).isoformat()})
     return {"status": "ok", "message": "تم تغيير كلمة المرور بنجاح"}
 
 
@@ -413,7 +422,12 @@ async def supplier_login(data: LoginInput):
     doc = await db.suppliers.find_one({"phone": data.phone}, {"_id": 0})
     if not doc or doc["password"] != hash_password(data.password):
         raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
+    if doc.get("disabled"):
+        raise HTTPException(status_code=403, detail="الحساب معطل")
     token = create_token(doc["id"], "supplier")
+    await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
+        "actor": {"id": doc["id"], "role": "supplier", "phone": data.phone},
+        "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
     return {"token": token, "supplier": {"id": doc["id"], "name": doc["name"], "phone": doc["phone"], "address": doc["address"]}}
 
 
@@ -1026,3 +1040,288 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+
+# ============== Admin Bootstrap & RBAC ==============
+
+@app.on_event("startup")
+async def seed_admin():
+    """Create the default admin if no admin exists."""
+    existing = await db.admins.find_one({}, {"_id": 0})
+    if existing:
+        return
+    await db.admins.insert_one({
+        "id": str(uuid.uuid4()),
+        "email": "admin@system.local",
+        "phone": "0000000000",
+        "password": hash_password("admin123"),
+        "must_change_password": True,
+        "disabled": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    logger.info("Seeded default admin: phone=0000000000 password=admin123")
+
+
+# ---------- Audit log helper ----------
+async def audit(action: str, actor: dict | None = None, target: dict | None = None, meta: dict | None = None) -> None:
+    try:
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": action,
+            "actor": actor or {},
+            "target": target or {},
+            "meta": meta or {},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        logger.exception("audit log failed")
+
+
+# ---------- Admin Auth ----------
+class AdminLoginIn(BaseModel):
+    phone: str
+    password: str
+
+
+class AdminChangePasswordIn(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@api_router.post("/admin/login")
+async def admin_login(data: AdminLoginIn):
+    doc = await db.admins.find_one({"phone": data.phone}, {"_id": 0})
+    if not doc or doc["password"] != hash_password(data.password):
+        await audit("login_failed", actor={"phone": data.phone, "role": "admin"})
+        raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
+    if doc.get("disabled"):
+        raise HTTPException(status_code=403, detail="الحساب معطل")
+    token = create_token(doc["id"], "admin")
+    await audit("login", actor={"id": doc["id"], "role": "admin", "phone": data.phone})
+    return {
+        "token": token,
+        "admin": {
+            "id": doc["id"], "email": doc.get("email"), "phone": doc["phone"],
+            "must_change_password": bool(doc.get("must_change_password", False)),
+        },
+    }
+
+
+@api_router.post("/admin/change-password")
+async def admin_change_password(data: AdminChangePasswordIn, user: dict = Depends(require_role("admin"))):
+    doc = await db.admins.find_one({"id": user["sub"]}, {"_id": 0})
+    if not doc or doc["password"] != hash_password(data.old_password):
+        raise HTTPException(status_code=401, detail="كلمة المرور القديمة غير صحيحة")
+    if len(data.new_password) < 6:
+        raise HTTPException(status_code=400, detail="كلمة المرور يجب أن تكون 6 أحرف على الأقل")
+    await db.admins.update_one(
+        {"id": user["sub"]},
+        {"$set": {"password": hash_password(data.new_password), "must_change_password": False}},
+    )
+    await audit("password_change", actor={"id": user["sub"], "role": "admin"})
+    return {"status": "ok"}
+
+
+# ---------- Admin: Stats ----------
+@api_router.get("/admin/stats")
+async def admin_stats(user: dict = Depends(require_role("admin"))):
+    pharmacies_count = await db.pharmacies.count_documents({})
+    suppliers_count = await db.suppliers.count_documents({})
+    medicines_count = await db.medicines.count_documents({})
+    products_count = await db.supplier_products.count_documents({})
+    orders_count = await db.orders.count_documents({})
+    sales_docs = await db.sales.find({}, {"_id": 0, "total": 1}).to_list(100000)
+    revenue = sum(float(s.get("total") or 0) for s in sales_docs)
+    sales_count = len(sales_docs)
+    catalog_jobs = await db.import_jobs.count_documents({})
+    audit_count = await db.audit_logs.count_documents({})
+    return {
+        "pharmacies": pharmacies_count,
+        "suppliers": suppliers_count,
+        "medicines": medicines_count,
+        "products": products_count,
+        "orders": orders_count,
+        "sales": sales_count,
+        "revenue": round(revenue, 2),
+        "catalog_jobs": catalog_jobs,
+        "audit_logs": audit_count,
+    }
+
+
+# ---------- Admin: Users ----------
+@api_router.get("/admin/users")
+async def admin_users(role: Optional[str] = None, user: dict = Depends(require_role("admin"))):
+    out: list[dict] = []
+    if role in (None, "pharmacy"):
+        ps = await db.pharmacies.find({}, {"_id": 0, "password": 0}).to_list(2000)
+        for p in ps:
+            p["role"] = "pharmacy"
+        out.extend(ps)
+    if role in (None, "supplier"):
+        ss = await db.suppliers.find({}, {"_id": 0, "password": 0}).to_list(2000)
+        for s in ss:
+            s["role"] = "supplier"
+        out.extend(ss)
+    return out
+
+
+@api_router.patch("/admin/users/{role}/{user_id}")
+async def admin_toggle_user(role: str, user_id: str, body: dict, user: dict = Depends(require_role("admin"))):
+    if role not in ("pharmacy", "supplier"):
+        raise HTTPException(status_code=400, detail="role غير صالح")
+    coll = db.pharmacies if role == "pharmacy" else db.suppliers
+    if "disabled" not in body:
+        raise HTTPException(status_code=400, detail="يجب تمرير قيمة disabled")
+    new_val = bool(body["disabled"])
+    res = await coll.update_one({"id": user_id}, {"$set": {"disabled": new_val}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="المستخدم غير موجود")
+    await audit("user_disabled" if new_val else "user_enabled",
+                actor={"id": user["sub"], "role": "admin"},
+                target={"id": user_id, "role": role})
+    return {"status": "ok"}
+
+
+@api_router.delete("/admin/users/{role}/{user_id}")
+async def admin_delete_user(role: str, user_id: str, user: dict = Depends(require_role("admin"))):
+    if role not in ("pharmacy", "supplier"):
+        raise HTTPException(status_code=400, detail="role غير صالح")
+    coll = db.pharmacies if role == "pharmacy" else db.suppliers
+    res = await coll.delete_one({"id": user_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="المستخدم غير موجود")
+    # Cascade: also remove their data (idempotent)
+    if role == "pharmacy":
+        await db.medicines.delete_many({"pharmacy_id": user_id})
+        await db.orders.delete_many({"pharmacy_id": user_id})
+    else:
+        await db.supplier_products.delete_many({"supplier_id": user_id})
+    await audit("user_deleted", actor={"id": user["sub"], "role": "admin"},
+                target={"id": user_id, "role": role})
+    return {"status": "ok"}
+
+
+# ---------- Admin: Orders ----------
+@api_router.get("/admin/orders")
+async def admin_orders(status: Optional[str] = None, user: dict = Depends(require_role("admin"))):
+    q: dict = {}
+    if status:
+        q["status"] = status
+    docs = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    # Enrich pharmacy name
+    pharmacy_ids = list({d["pharmacy_id"] for d in docs})
+    pharmas = await db.pharmacies.find({"id": {"$in": pharmacy_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
+    name_by_id = {p["id"]: p["name"] for p in pharmas}
+    for d in docs:
+        d["pharmacy_name"] = name_by_id.get(d["pharmacy_id"], "—")
+        d.setdefault("status", "pending")
+    return docs
+
+
+@api_router.patch("/admin/orders/{order_id}")
+async def admin_update_order(order_id: str, body: dict, user: dict = Depends(require_role("admin"))):
+    new_status = body.get("status")
+    if new_status not in ("pending", "confirmed", "delivered", "cancelled"):
+        raise HTTPException(status_code=400, detail="status غير صالح")
+    res = await db.orders.update_one({"id": order_id}, {"$set": {"status": new_status}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="الطلبية غير موجودة")
+    return {"status": "ok"}
+
+
+# ---------- Admin: Products (medicines + supplier_products) ----------
+@api_router.get("/admin/products")
+async def admin_products(kind: Optional[str] = None, user: dict = Depends(require_role("admin"))):
+    out: list[dict] = []
+    if kind in (None, "medicine"):
+        meds = await db.medicines.find({}, {"_id": 0}).to_list(5000)
+        for m in meds:
+            m["kind"] = "medicine"
+        out.extend(meds)
+    if kind in (None, "supplier_product"):
+        sp = await db.supplier_products.find({}, {"_id": 0}).to_list(5000)
+        for s in sp:
+            s["kind"] = "supplier_product"
+        out.extend(sp)
+    return out
+
+
+@api_router.delete("/admin/products/{kind}/{product_id}")
+async def admin_delete_product(kind: str, product_id: str, user: dict = Depends(require_role("admin"))):
+    if kind == "medicine":
+        coll = db.medicines
+    elif kind == "supplier_product":
+        coll = db.supplier_products
+    else:
+        raise HTTPException(status_code=400, detail="kind غير صالح")
+    res = await coll.delete_one({"id": product_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="المنتج غير موجود")
+    await audit("product_deleted", actor={"id": user["sub"], "role": "admin"},
+                target={"id": product_id, "kind": kind})
+    return {"status": "ok"}
+
+
+# ---------- Admin: Notifications ----------
+class NotificationIn(BaseModel):
+    title: str
+    body: str
+    audience: str = "all"  # all | pharmacy | supplier
+
+
+@api_router.post("/admin/notifications")
+async def admin_send_notification(data: NotificationIn, user: dict = Depends(require_role("admin"))):
+    if data.audience not in ("all", "pharmacy", "supplier"):
+        raise HTTPException(status_code=400, detail="audience غير صالح")
+    if not data.title.strip() or not data.body.strip():
+        raise HTTPException(status_code=400, detail="العنوان والمحتوى مطلوبان")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": data.title.strip(),
+        "body": data.body.strip(),
+        "audience": data.audience,
+        "active": True,
+        "created_by": user["sub"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.notifications.insert_one(doc.copy())
+    return doc
+
+
+@api_router.get("/admin/notifications")
+async def admin_list_notifications(user: dict = Depends(require_role("admin"))):
+    docs = await db.notifications.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return docs
+
+
+@api_router.delete("/admin/notifications/{notif_id}")
+async def admin_delete_notification(notif_id: str, user: dict = Depends(require_role("admin"))):
+    await db.notifications.delete_one({"id": notif_id})
+    return {"status": "ok"}
+
+
+# Public: any logged-in user fetches active notifications for their audience
+@api_router.get("/notifications/active")
+async def active_notifications(user: dict = Depends(get_current_user)):
+    role = user.get("role")
+    docs = await db.notifications.find(
+        {"active": True, "audience": {"$in": ["all", role]}},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(20)
+    return docs
+
+
+# ---------- Admin: Audit Logs ----------
+@api_router.get("/admin/audit-logs")
+async def admin_audit(action: Optional[str] = None, limit: int = 200, user: dict = Depends(require_role("admin"))):
+    q: dict = {}
+    if action:
+        q["action"] = action
+    docs = await db.audit_logs.find(q, {"_id": 0}).sort("timestamp", -1).to_list(min(limit, 1000))
+    return docs
+
+
+# ============== End Admin ==============
+
+# Re-register router to pick up admin routes added after initial include
+app.include_router(api_router)

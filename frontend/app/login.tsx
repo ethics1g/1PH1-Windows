@@ -10,7 +10,7 @@ import { useAuth, apiFetch } from '../src/auth';
 import { colors } from '../src/theme';
 
 type Mode = 'login' | 'register';
-type Role = 'pharmacy' | 'supplier';
+type Role = 'pharmacy' | 'supplier' | 'admin';
 
 export default function Login() {
   const router = useRouter();
@@ -34,11 +34,25 @@ export default function Login() {
     }
     setLoading(true);
     try {
+      let res: any;
+      if (role === 'admin') {
+        if (mode === 'register') {
+          throw new Error('لا يمكن التسجيل كأدمن');
+        }
+        res = await apiFetch('/admin/login', { method: 'POST', body: JSON.stringify({ phone, password }) });
+        await signIn(res.token, 'admin', res.admin);
+        if (res.admin.must_change_password) {
+          router.replace('/admin/change-password');
+        } else {
+          router.replace('/admin/dashboard');
+        }
+        return;
+      }
       const path = `/${role}/${mode === 'register' ? 'register' : 'login'}`;
       const body = mode === 'register'
         ? { name, phone, password, address }
         : { phone, password };
-      const res: any = await apiFetch(path, { method: 'POST', body: JSON.stringify(body) });
+      res = await apiFetch(path, { method: 'POST', body: JSON.stringify(body) });
       const userObj = role === 'pharmacy' ? res.pharmacy : res.supplier;
       await signIn(res.token, role, userObj);
       router.replace(role === 'pharmacy' ? '/home' : '/supplier-dashboard');
@@ -80,6 +94,14 @@ export default function Login() {
             >
               <Ionicons name="business" size={18} color={role === 'supplier' ? '#fff' : colors.textSecondary} />
               <Text style={[styles.roleTxt, role === 'supplier' && styles.roleTxtActive]}>مذخر</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="role-admin"
+              style={[styles.roleBtn, role === 'admin' && styles.roleBtnActive]}
+              onPress={() => { setRole('admin'); setMode('login'); }}
+            >
+              <Ionicons name="shield-checkmark" size={18} color={role === 'admin' ? '#fff' : colors.textSecondary} />
+              <Text style={[styles.roleTxt, role === 'admin' && styles.roleTxtActive]}>مدير</Text>
             </TouchableOpacity>
           </View>
 

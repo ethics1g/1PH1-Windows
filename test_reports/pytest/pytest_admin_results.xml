@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="29" time="57.643" timestamp="2026-05-09T14:58:10.229062+00:00" hostname="agent-env-1494adb4-9ac7-4c55-8aae-9641c484f2f7"><testcase classname="tests.test_admin.TestAdminLogin" name="test_admin_login_success" time="0.295" /><testcase classname="tests.test_admin.TestAdminLogin" name="test_admin_login_wrong_password_writes_audit" time="0.502" /><testcase classname="tests.test_admin.TestAdminLogin" name="test_admin_login_unknown_phone" time="0.156" /><testcase classname="tests.test_admin.TestRBAC" name="test_no_token_401" time="0.159" /><testcase classname="tests.test_admin.TestRBAC" name="test_pharmacy_token_403" time="0.300" /><testcase classname="tests.test_admin.TestRBAC" name="test_supplier_token_403" time="0.299" /><testcase classname="tests.test_admin.TestRBAC" name="test_admin_token_200" time="0.348" /><testcase classname="tests.test_admin.TestAdminChangePassword" name="test_validates_old_password" time="0.344" /><testcase classname="tests.test_admin.TestAdminChangePassword" name="test_validates_new_password_length" time="0.340" /><testcase classname="tests.test_admin.TestAdminChangePassword" name="test_change_password_flow_and_restore" time="0.942" /><testcase classname="tests.test_admin.TestAdminStats" name="test_stats_schema" time="0.288" /><testcase classname="tests.test_admin.TestAdminUsers" name="test_users_list_combined_with_role" time="1.230" /><testcase classname="tests.test_admin.TestAdminUsers" name="test_users_role_filter" time="1.358" /><testcase classname="tests.test_admin.TestAdminUsers" name="test_disable_pharmacy_blocks_login_then_enable" time="1.465" /><testcase classname="tests.test_admin.TestAdminUsers" name="test_disable_supplier_blocks_login" time="0.808" /><testcase classname="tests.test_admin.TestAdminUsers" name="test_patch_invalid_role" time="0.301" /><testcase classname="tests.test_admin.TestAdminUsers" name="test_patch_missing_disabled" time="0.756" /><testcase classname="tests.test_admin.TestAdminUsers" name="test_delete_pharmacy_cascades_medicines" time="1.807" /><testcase classname="tests.test_admin.TestAdminUsers" name="test_delete_supplier_cascades_products" time="1.480" /><testcase classname="tests.test_admin.TestAdminOrders" name="test_orders_listing_enriched_and_status_update" time="1.138" /><testcase classname="tests.test_admin.TestAdminOrders" name="test_order_invalid_status" time="0.292" /><testcase classname="tests.test_admin.TestAdminOrders" name="test_order_not_found" time="0.326" /><testcase classname="tests.test_admin.TestAdminProducts" name="test_combined_with_kind_and_delete" time="2.112" /><testcase classname="tests.test_admin.TestAdminNotifications" name="test_create_list_delete_and_audience_routing" time="36.536"><failure message="requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='pharma-checkout-8.preview.emergentagent.com', port=443): Max retries exceeded with url: /api/admin/notifications/d4882392-d6be-486a-8c46-bbf1d3e1be5d (Caused by ConnectTimeoutError(&lt;HTTPSConnection(host='pharma-checkout-8.preview.emergentagent.com', port=443) at 0x798f23da14d0&gt;, 'Connection to pharma-checkout-8.preview.emergentagent.com timed out. (connect timeout=15)'))">/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:204: in _new_conn
+    sock = connection.create_connection(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/connection.py:85: in create_connection
+    raise err
+/root/.venv/lib/python3.11/site-packages/urllib3/util/connection.py:73: in create_connection
+    sock.connect(sa)
+E   TimeoutError: timed out
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:787: in urlopen
+    response = self._make_request(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:488: in _make_request
+    raise new_e
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:464: in _make_request
+    self._validate_conn(conn)
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:1093: in _validate_conn
+    conn.connect()
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:759: in connect
+    self.sock = sock = self._new_conn()
+                       ^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:213: in _new_conn
+    raise ConnectTimeoutError(
+E   urllib3.exceptions.ConnectTimeoutError: (&lt;HTTPSConnection(host='pharma-checkout-8.preview.emergentagent.com', port=443) at 0x798f23da14d0&gt;, 'Connection to pharma-checkout-8.preview.emergentagent.com timed out. (connect timeout=15)')
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:645: in send
+    resp = conn.urlopen(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:841: in urlopen
+    retries = retries.increment(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/retry.py:535: in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='pharma-checkout-8.preview.emergentagent.com', port=443): Max retries exceeded with url: /api/admin/notifications/d4882392-d6be-486a-8c46-bbf1d3e1be5d (Caused by ConnectTimeoutError(&lt;HTTPSConnection(host='pharma-checkout-8.preview.emergentagent.com', port=443) at 0x798f23da14d0&gt;, 'Connection to pharma-checkout-8.preview.emergentagent.com timed out. (connect timeout=15)'))
+
+During handling of the above exception, another exception occurred:
+tests/test_admin.py:416: in test_create_list_delete_and_audience_routing
+    d = requests.delete(f"{API}/admin/notifications/{nid}", headers=_h(tok), timeout=15)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/api.py:157: in delete
+    return request("delete", url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/api.py:59: in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:592: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:706: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:666: in send
+    raise ConnectTimeout(e, request=request)
+E   requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='pharma-checkout-8.preview.emergentagent.com', port=443): Max retries exceeded with url: /api/admin/notifications/d4882392-d6be-486a-8c46-bbf1d3e1be5d (Caused by ConnectTimeoutError(&lt;HTTPSConnection(host='pharma-checkout-8.preview.emergentagent.com', port=443) at 0x798f23da14d0&gt;, 'Connection to pharma-checkout-8.preview.emergentagent.com timed out. (connect timeout=15)'))</failure></testcase><testcase classname="tests.test_admin.TestAdminNotifications" name="test_active_requires_auth" time="2.163" /><testcase classname="tests.test_admin.TestAuditLogs" name="test_action_filter" time="0.442" /><testcase classname="tests.test_admin.TestAuditLogs" name="test_no_filter" time="0.306" /><testcase classname="tests.test_admin.TestRegression" name="test_pharmacy_login" time="0.168" /><testcase classname="tests.test_admin.TestRegression" name="test_supplier_login" time="0.278" /></testsuite></testsuites>

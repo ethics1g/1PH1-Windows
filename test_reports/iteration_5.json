@@ -1,0 +1,47 @@
+{
+  "summary": "Backend testing of new Admin Dashboard / RBAC feature. Wrote 29 admin tests in /app/backend/tests/test_admin.py covering all 17 acceptance criteria. Final run: 29/29 admin tests + 71/71 prior tests = 100/100 pass. All admin endpoints (login, RBAC, change-password, stats, users CRUD with cascade, orders status flow, products by kind, notifications + audience routing, audit-logs filter) work correctly. Pharmacy/supplier login regression verified. Admin password successfully restored to admin123 at end.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/admin/users", "issue": "Response includes hashed `password` field — wait, actually verified excluded via projection {password:0}. But `disabled` field is only present after first toggle; pre-existing pharmacies/suppliers don't carry it. UI should default to false."},
+      {"endpoint": "POST /api/admin/change-password", "issue": "Once must_change_password is set to false it can never become true again (no admin endpoint to force-reset). Recovery requires deleting db.admins doc to re-seed. Documented in test_credentials.md but no API path exposed."},
+      {"endpoint": "GET /api/admin/orders", "issue": "When orders predate the status field, server fills `status='pending'` in response but does NOT persist it. Status filter `?status=pending` therefore returns 0 rows for legacy orders (Mongo query mismatches). Consider migrating or using `$or [{status:'pending'},{status:{$exists:false}}]`."},
+      {"endpoint": "DELETE /api/admin/notifications/{id}", "issue": "Returns 200 ok even when id does not exist (no 404). Idempotent but masks client bugs."},
+      {"endpoint": "POST /api/admin/login", "issue": "Disabled-admin path (line 1097) is unreachable in practice — no endpoint to disable an admin. If admin gets disabled by direct DB write, login returns 403 'الحساب معطل' as expected (manually verified)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin.py",
+    "/app/test_reports/pytest/pytest_admin_results.xml",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: Persist default `status:'pending'` on order creation (or update admin_orders query to handle missing field) so ?status=pending filter returns legacy orders too.",
+    "Optional: Return 404 from DELETE /api/admin/notifications/{id} when not found (or document idempotent behavior).",
+    "Optional: Provide a way for super-admin to reset must_change_password flag for sub-admins (currently flag is one-way false).",
+    "Optional (carry-over from iter4): split server.py (>1300 lines) into routers/, raise JWT_SECRET ≥ 32 bytes."
+  ],
+  "critical_code_review_comments": [
+    "server.py grew from 1030→1328 lines. Admin section is well-organized but the file should be split: routers/admin.py, routers/auth.py, etc.",
+    "`app.include_router(api_router)` is called twice (line 1029 and 1327). Second call is a no-op for already-registered routes but unusual; the comment claims it 'picks up admin routes added after initial include' — actually FastAPI shares the APIRouter instance so the first include_router already references the same object. Routes added later ARE picked up by the first call. The second include_router is dead code — remove for clarity.",
+    "Audit helper `audit()` swallows all exceptions silently. Acceptable for non-critical logging but could mask DB issues.",
+    "admin_toggle_user accepts raw `dict` body instead of a Pydantic model (no schema validation in OpenAPI). Same for admin_update_order. Consider DisabledIn / OrderStatusIn models.",
+    "Password storage is still raw sha256 (no salt, no bcrypt). Pre-existing concern, but admin password is now another attack vector.",
+    "Default admin password 'admin123' is logged at startup (line 1062). Acceptable for dev seed but should be removed or gated behind ENV=development."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin.py (created, 29 tests)"
+  ],
+  "success_rate": {"backend": "100% (29/29 admin tests, 100/100 overall)", "frontend": "n/a (backend-only request)"},
+  "seed_data_creation": "Each user-related test registers ephemeral pharmacy (phone 0779*) + supplier (phone 0788*) via fixtures and tears them down with admin cascade-delete. Notification tests create TEST_-prefixed records and clean up at end. Admin password is changed and restored within the same test (test_change_password_flow_and_restore). Verified at end: admin login with admin123 works (must_change_password=false now, since flag is one-way after first change — re-seed by dropping db.admins to restore must_change_password=true).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run with EXPO_PUBLIC_BACKEND_URL set: `pytest /app/backend/tests/test_admin.py -v`. Tests are idempotent (random phones each run) and clean up after themselves. NOTE: Backend uvicorn auto-reloads when test files in /app/backend/tests/ change — this can cause transient connection-timeout failures mid-run; simply re-run the affected test. Total backend suite ≈ 100 tests, ~95s.",
+  "rca_of_issue": "n/a — feature works end-to-end as designed. The single test failure during the full-suite run was a transient ConnectTimeout caused by uvicorn auto-reloading after WatchFiles detected the new test file; passed cleanly on rerun."
+}
