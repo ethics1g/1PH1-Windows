@@ -26,6 +26,7 @@ export default function RootLayout() {
           <Stack.Screen name="reset-password" />
           <Stack.Screen name="admin/dashboard" />
           <Stack.Screen name="admin/change-password" />
+          <Stack.Screen name="commissions" />
         </Stack>
       </AuthProvider>
     </SafeAreaProvider>

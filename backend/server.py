@@ -1392,6 +1392,228 @@ async def admin_audit(action: Optional[str] = None, limit: int = 200, user: dict
     return docs
 
 
+# ---------- Supplier Commissions ----------
+COMMISSION_RATE = 0.04  # 4%
+
+
+class CommitGroupItem(BaseModel):
+    name: str
+    quantity: int
+    unit_price: float
+
+
+class CommitGroup(BaseModel):
+    supplier_id: str
+    supplier_name: str
+    items: List[CommitGroupItem]
+    total: float
+
+
+class CommitOrderIn(BaseModel):
+    commit_id: str  # client-generated UUID; idempotent
+    groups: List[CommitGroup]
+
+
+@api_router.post("/orders/optimize/commit")
+async def commit_order(data: CommitOrderIn, user: dict = Depends(require_role("pharmacy"))):
+    """Pharmacy locks a plan -> create one supplier_sales record per group (4% commission)."""
+    if not data.commit_id or not data.groups:
+        raise HTTPException(status_code=400, detail="بيانات ناقصة")
+    # Idempotency: skip if already committed
+    existing = await db.supplier_sales.count_documents({"commit_id": data.commit_id})
+    if existing > 0:
+        return {"status": "already_committed", "commit_id": data.commit_id, "created": 0}
+
+    pharmacy = await db.pharmacies.find_one({"id": user["sub"]}, {"_id": 0})
+    if not pharmacy:
+        raise HTTPException(status_code=404, detail="Pharmacy not found")
+
+    created_records = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for g in data.groups:
+        if g.total <= 0:
+            continue
+        commission = round(g.total * COMMISSION_RATE, 2)
+        rec = {
+            "id": str(uuid.uuid4()),
+            "commit_id": data.commit_id,
+            "supplier_id": g.supplier_id,
+            "supplier_name": g.supplier_name,
+            "pharmacy_id": user["sub"],
+            "pharmacy_name": pharmacy.get("name"),
+            "order_total": float(g.total),
+            "commission": commission,
+            "rate": COMMISSION_RATE,
+            "items": [it.dict() for it in g.items],
+            "status": "pending",
+            "payment_proof_b64": None,
+            "paid_at": None,
+            "source": "optimize",
+            "frozen": True,
+            "created_at": now_iso,
+        }
+        await db.supplier_sales.insert_one(rec.copy())
+        rec.pop("_id", None)
+        created_records.append({"id": rec["id"], "supplier_name": rec["supplier_name"], "commission": rec["commission"]})
+
+    return {"status": "ok", "commit_id": data.commit_id, "created": len(created_records), "records": created_records}
+
+
+def _monthly_summary(records: list[dict]) -> list[dict]:
+    """Aggregate sales by YYYY-MM month."""
+    months: dict[str, dict] = {}
+    for r in records:
+        m = r.get("created_at", "")[:7] or "unknown"
+        m_data = months.setdefault(m, {"month": m, "total_sales": 0.0, "total_commission": 0.0,
+                                       "paid_commission": 0.0, "pending_commission": 0.0, "count": 0})
+        m_data["count"] += 1
+        m_data["total_sales"] += float(r.get("order_total") or 0)
+        m_data["total_commission"] += float(r.get("commission") or 0)
+        if r.get("status") == "paid":
+            m_data["paid_commission"] += float(r.get("commission") or 0)
+        else:
+            m_data["pending_commission"] += float(r.get("commission") or 0)
+    out = list(months.values())
+    out.sort(key=lambda x: x["month"], reverse=True)
+    for x in out:
+        for k in ("total_sales", "total_commission", "paid_commission", "pending_commission"):
+            x[k] = round(x[k], 2)
+    return out
+
+
+@api_router.get("/supplier/commissions")
+async def supplier_commissions(user: dict = Depends(require_role("supplier"))):
+    records = await db.supplier_sales.find(
+        {"supplier_id": user["sub"]},
+        {"_id": 0, "payment_proof_b64": 0},  # don't ship the heavy proof
+    ).sort("created_at", -1).to_list(2000)
+    full_records = await db.supplier_sales.find(
+        {"supplier_id": user["sub"]}, {"_id": 0}
+    ).to_list(2000)
+    summary = _monthly_summary(full_records)
+    outstanding = round(sum(r["pending_commission"] for r in summary), 2)
+    total_due = round(sum(r["total_commission"] for r in summary), 2)
+    total_sales = round(sum(r["total_sales"] for r in summary), 2)
+    return {
+        "records": records,
+        "monthly": summary,
+        "outstanding": outstanding,
+        "total_due": total_due,
+        "total_sales": total_sales,
+        "rate": COMMISSION_RATE,
+    }
+
+
+class UploadProofIn(BaseModel):
+    proof_b64: str
+
+
+@api_router.post("/supplier/commissions/{record_id}/upload-proof")
+async def supplier_upload_proof(record_id: str, data: UploadProofIn, user: dict = Depends(require_role("supplier"))):
+    if not data.proof_b64 or len(data.proof_b64) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="إثبات الدفع غير صالح أو كبير جداً")
+    rec = await db.supplier_sales.find_one({"id": record_id}, {"_id": 0})
+    if not rec or rec.get("supplier_id") != user["sub"]:
+        raise HTTPException(status_code=404, detail="السجل غير موجود")
+    if rec.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="هذا السجل مدفوع بالفعل")
+    await db.supplier_sales.update_one(
+        {"id": record_id},
+        {"$set": {"payment_proof_b64": data.proof_b64,
+                  "proof_uploaded_at": datetime.now(timezone.utc).isoformat(),
+                  "status": "submitted"}},
+    )
+    return {"status": "ok"}
+
+
+# Admin: commission management
+class AdminManualCommissionIn(BaseModel):
+    supplier_id: str
+    pharmacy_id: Optional[str] = None
+    pharmacy_name: Optional[str] = None
+    order_total: float
+    note: Optional[str] = None
+
+
+@api_router.get("/admin/commissions")
+async def admin_commissions(status: Optional[str] = None, supplier_id: Optional[str] = None,
+                            user: dict = Depends(require_role("admin"))):
+    q: dict = {}
+    if status:
+        q["status"] = status
+    if supplier_id:
+        q["supplier_id"] = supplier_id
+    records = await db.supplier_sales.find(q, {"_id": 0, "payment_proof_b64": 0}).sort("created_at", -1).to_list(5000)
+    # Aggregate stats
+    agg = await db.supplier_sales.aggregate([
+        {"$group": {"_id": "$status", "count": {"$sum": 1},
+                    "total_commission": {"$sum": "$commission"},
+                    "total_sales": {"$sum": "$order_total"}}}
+    ]).to_list(10)
+    stats = {a["_id"] or "unknown": {"count": a["count"],
+                                     "commission": round(a["total_commission"] or 0, 2),
+                                     "sales": round(a["total_sales"] or 0, 2)} for a in agg}
+    return {"records": records, "stats": stats}
+
+
+@api_router.get("/admin/commissions/{record_id}/proof")
+async def admin_get_proof(record_id: str, user: dict = Depends(require_role("admin"))):
+    rec = await db.supplier_sales.find_one({"id": record_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="غير موجود")
+    return {"proof_b64": rec.get("payment_proof_b64")}
+
+
+@api_router.post("/admin/commissions")
+async def admin_manual_commission(data: AdminManualCommissionIn, user: dict = Depends(require_role("admin"))):
+    """Manual commission entry by admin (offline / special cases)."""
+    supplier = await db.suppliers.find_one({"id": data.supplier_id}, {"_id": 0})
+    if not supplier:
+        raise HTTPException(status_code=404, detail="المذخر غير موجود")
+    if data.order_total <= 0:
+        raise HTTPException(status_code=400, detail="المبلغ غير صالح")
+    rec = {
+        "id": str(uuid.uuid4()),
+        "commit_id": str(uuid.uuid4()),
+        "supplier_id": data.supplier_id,
+        "supplier_name": supplier.get("name"),
+        "pharmacy_id": data.pharmacy_id,
+        "pharmacy_name": data.pharmacy_name,
+        "order_total": float(data.order_total),
+        "commission": round(float(data.order_total) * COMMISSION_RATE, 2),
+        "rate": COMMISSION_RATE,
+        "items": [],
+        "status": "pending",
+        "source": "manual",
+        "frozen": True,
+        "note": data.note,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.supplier_sales.insert_one(rec.copy())
+    rec.pop("_id", None)
+    return rec
+
+
+@api_router.patch("/admin/commissions/{record_id}/confirm")
+async def admin_confirm_commission(record_id: str, user: dict = Depends(require_role("admin"))):
+    rec = await db.supplier_sales.find_one({"id": record_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="غير موجود")
+    if rec.get("status") == "paid":
+        return {"status": "already_paid"}
+    await db.supplier_sales.update_one(
+        {"id": record_id},
+        {"$set": {"status": "paid",
+                  "paid_at": datetime.now(timezone.utc).isoformat(),
+                  "confirmed_by": user["sub"]}},
+    )
+    await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "commission_paid",
+        "actor": {"id": user["sub"], "role": "admin"},
+        "target": {"id": record_id, "supplier_id": rec.get("supplier_id"), "amount": rec.get("commission")},
+        "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
+    return {"status": "ok"}
+
+
 # ============== End Admin ==============
 
 # Re-register router to pick up admin routes added after initial include

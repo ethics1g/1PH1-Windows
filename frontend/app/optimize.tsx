@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Linking, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -32,6 +32,9 @@ export default function Optimize() {
   const [loading, setLoading] = useState(true);
   const [result, setResult] = useState<OptimizeResult | null>(null);
   const [tab, setTab] = useState<'split' | 'single'>('split');
+  const [committed, setCommitted] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const commitIdRef = useRef<string>('');
 
   useEffect(() => {
     (async () => {
@@ -62,6 +65,47 @@ export default function Optimize() {
     const phone = (group.supplier_phone || '').replace(/[^\d]/g, '');
     const url = phone ? `https://wa.me/${phone}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`;
     Linking.openURL(url);
+  };
+
+  const confirmOrder = async (groups: SupplierGroup[]) => {
+    if (committed || committing) return;
+    if (!groups || groups.length === 0) return;
+    Alert.alert(
+      'تثبيت الطلبية',
+      `سيتم إنشاء سجل عمولة (4%) لكل مذخر. لا يمكن التراجع. هل أنت متأكد؟`,
+      [
+        { text: 'إلغاء', style: 'cancel' },
+        { text: 'تثبيت', style: 'default', onPress: async () => {
+          setCommitting(true);
+          try {
+            // Generate idempotent commit_id
+            if (!commitIdRef.current) {
+              commitIdRef.current = `c_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+            }
+            const payload = {
+              commit_id: commitIdRef.current,
+              groups: groups.map(g => ({
+                supplier_id: g.supplier_id,
+                supplier_name: g.supplier_name,
+                total: g.total,
+                items: g.items.map(it => ({ name: it.name, quantity: it.quantity, unit_price: it.unit_price })),
+              })),
+            };
+            const res: any = await apiFetch('/orders/optimize/commit', { method: 'POST', body: JSON.stringify(payload) }, token);
+            setCommitted(true);
+            const totalCommission = groups.reduce((s, g) => s + g.total * 0.04, 0);
+            Alert.alert(
+              '✅ تم التثبيت',
+              `تم إنشاء ${res.created} سجل\nإجمالي العمولة: ${fmt(totalCommission)} د.ع\n\nيمكنك الآن إرسال الطلبية للمذاخر.`,
+            );
+          } catch (e: any) {
+            Alert.alert('خطأ', e.message || 'فشل التثبيت');
+          } finally {
+            setCommitting(false);
+          }
+        }},
+      ],
+    );
   };
 
   const copyAll = (groups: SupplierGroup[]) => {
@@ -142,9 +186,9 @@ export default function Optimize() {
             </View>
 
             {tab === 'split' ? (
-              <SplitView groups={split.groups} total={split.total} savings={split.savings_vs_max} onSend={sendWhatsApp} onCopy={() => copyAll(split.groups)} />
+              <SplitView groups={split.groups} total={split.total} savings={split.savings_vs_max} onSend={sendWhatsApp} onCopy={() => copyAll(split.groups)} onConfirm={() => confirmOrder(split.groups)} committed={committed} committing={committing} />
             ) : (
-              <SingleSupplierView options={single.options} onSend={sendWhatsApp} />
+              <SingleSupplierView options={single.options} onSend={sendWhatsApp} onConfirm={(g) => confirmOrder([g])} committed={committed} committing={committing} />
             )}
           </>
         )}
@@ -153,7 +197,7 @@ export default function Optimize() {
   );
 }
 
-function SplitView({ groups, total, savings, onSend, onCopy }: { groups: SupplierGroup[]; total: number; savings: number; onSend: (g: SupplierGroup) => void; onCopy: () => void }) {
+function SplitView({ groups, total, savings, onSend, onCopy, onConfirm, committed, committing }: { groups: SupplierGroup[]; total: number; savings: number; onSend: (g: SupplierGroup) => void; onCopy: () => void; onConfirm: () => void; committed: boolean; committing: boolean }) {
   if (!groups.length) return <Text style={styles.emptyTxt}>لا يوجد عرض تقسيم</Text>;
   return (
     <View style={{ gap: 12 }}>
@@ -162,6 +206,15 @@ function SplitView({ groups, total, savings, onSend, onCopy }: { groups: Supplie
         <Text style={styles.totalValue} testID="split-total">{fmt(total)} د.ع</Text>
         {savings > 0 && <Text style={styles.savePill}>توفير {fmt(savings)} د.ع</Text>}
       </View>
+
+      <TouchableOpacity testID="btn-confirm-split" style={[styles.confirmBtn, committed && styles.confirmedBtn]} onPress={onConfirm} disabled={committed || committing}>
+        {committing ? <ActivityIndicator color="#fff" /> : (
+          <>
+            <Ionicons name={committed ? 'checkmark-done' : 'lock-closed'} size={18} color="#fff" />
+            <Text style={styles.confirmTxt}>{committed ? 'تم التثبيت ✓' : 'تثبيت الطلبية وحساب العمولة'}</Text>
+          </>
+        )}
+      </TouchableOpacity>
 
       <TouchableOpacity testID="btn-copy-all" style={styles.copyBtn} onPress={onCopy}>
         <Ionicons name="copy-outline" size={18} color={colors.secondaryDark} />
@@ -175,7 +228,7 @@ function SplitView({ groups, total, savings, onSend, onCopy }: { groups: Supplie
   );
 }
 
-function SingleSupplierView({ options, onSend }: { options: SupplierGroup[]; onSend: (g: SupplierGroup) => void }) {
+function SingleSupplierView({ options, onSend, onConfirm, committed, committing }: { options: SupplierGroup[]; onSend: (g: SupplierGroup) => void; onConfirm: (g: SupplierGroup) => void; committed: boolean; committing: boolean }) {
   if (!options.length) {
     return (
       <View style={styles.empty}>
@@ -190,6 +243,16 @@ function SingleSupplierView({ options, onSend }: { options: SupplierGroup[]; onS
         <View key={g.supplier_id}>
           {i === 0 && <View style={styles.bestBadge}><Ionicons name="star" size={12} color="#fff" /><Text style={styles.bestTxt}>الأرخص</Text></View>}
           <SupplierCard group={g} onSend={onSend} highlight={i === 0} />
+          {i === 0 && (
+            <TouchableOpacity testID={`btn-confirm-single-${g.supplier_id}`} style={[styles.confirmBtn, { marginTop: 8 }, committed && styles.confirmedBtn]} onPress={() => onConfirm(g)} disabled={committed || committing}>
+              {committing ? <ActivityIndicator color="#fff" /> : (
+                <>
+                  <Ionicons name={committed ? 'checkmark-done' : 'lock-closed'} size={18} color="#fff" />
+                  <Text style={styles.confirmTxt}>{committed ? 'تم التثبيت ✓' : 'تثبيت مع هذا المذخر'}</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
       ))}
     </View>
@@ -268,4 +331,7 @@ const styles = StyleSheet.create({
   waTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
   bestBadge: { position: 'absolute', top: -2, right: 14, zIndex: 1, backgroundColor: colors.primary, flexDirection: 'row-reverse', gap: 4, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, alignItems: 'center' },
   bestTxt: { color: '#fff', fontSize: 11, fontWeight: '800' },
+  confirmBtn: { backgroundColor: colors.indigo, borderRadius: 14, paddingVertical: 14, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 8, shadowColor: colors.indigo, shadowOpacity: 0.25, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
+  confirmedBtn: { backgroundColor: '#22c55e' },
+  confirmTxt: { color: '#fff', fontWeight: '900', fontSize: 14 },
 });

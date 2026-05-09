@@ -9,13 +9,14 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useAuth, apiFetch } from '../../src/auth';
 import { colors } from '../../src/theme';
 
-type TabKey = 'overview' | 'users' | 'orders' | 'products' | 'notifications' | 'audit';
+type TabKey = 'overview' | 'users' | 'orders' | 'products' | 'commissions' | 'notifications' | 'audit';
 
 const TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { key: 'overview', label: 'الإحصاءات', icon: 'stats-chart' },
   { key: 'users', label: 'المستخدمون', icon: 'people' },
   { key: 'orders', label: 'الطلبيات', icon: 'cart' },
   { key: 'products', label: 'المنتجات', icon: 'cube' },
+  { key: 'commissions', label: 'العمولات', icon: 'cash' },
   { key: 'notifications', label: 'الإشعارات', icon: 'notifications' },
   { key: 'audit', label: 'السجل', icon: 'document-text' },
 ];
@@ -42,6 +43,7 @@ export default function AdminDashboard() {
         {tab === 'users' && <Users token={token!} />}
         {tab === 'orders' && <Orders token={token!} />}
         {tab === 'products' && <Products token={token!} />}
+        {tab === 'commissions' && <Commissions token={token!} />}
         {tab === 'notifications' && <Notifications token={token!} />}
         {tab === 'audit' && <AuditLogs token={token!} />}
       </View>
@@ -330,6 +332,172 @@ function Products({ token }: { token: string }) {
   );
 }
 
+// ----- Commissions -----
+function Commissions({ token }: { token: string }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [filter, setFilter] = useState<string>('all');
+  const [proofRec, setProofRec] = useState<any | null>(null);
+  const [proofB64, setProofB64] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
+    pending: { label: 'مستحقة', color: '#92400e', bg: '#fef3c7' },
+    submitted: { label: 'بانتظار التأكيد', color: '#1e40af', bg: '#dbeafe' },
+    paid: { label: 'مدفوعة', color: '#166534', bg: '#dcfce7' },
+  };
+
+  const load = useCallback(async () => {
+    try {
+      const path = filter === 'all' ? '/admin/commissions' : `/admin/commissions?status=${filter}`;
+      const res: any = await apiFetch(path, {}, token);
+      setData(res);
+    } catch (e: any) { Alert.alert('خطأ', e.message); }
+    finally { setLoading(false); setRefreshing(false); }
+  }, [token, filter]);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const viewProof = async (rec: any) => {
+    setProofRec(rec);
+    setProofB64(null);
+    try {
+      const res: any = await apiFetch(`/admin/commissions/${rec.id}/proof`, {}, token);
+      setProofB64(res.proof_b64);
+    } catch (e: any) { Alert.alert('خطأ', e.message); }
+  };
+
+  const confirmPayment = async (rec: any) => {
+    Alert.alert('تأكيد الدفع؟', `سيتم وضع علامة "مدفوعة" على عمولة ${Math.round(rec.commission).toLocaleString()} د.ع للمذخر ${rec.supplier_name}`, [
+      { text: 'إلغاء', style: 'cancel' },
+      { text: 'تأكيد', style: 'default', onPress: async () => {
+        setBusy(rec.id);
+        try {
+          await apiFetch(`/admin/commissions/${rec.id}/confirm`, { method: 'PATCH' }, token);
+          setProofRec(null); setProofB64(null);
+          await load();
+        } catch (e: any) { Alert.alert('خطأ', e.message); }
+        finally { setBusy(null); }
+      }},
+    ]);
+  };
+
+  if (loading) return <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>;
+  if (!data) return null;
+
+  const stats = data.stats || {};
+  const totalPending = (stats.pending?.commission || 0) + (stats.submitted?.commission || 0);
+  const totalPaid = stats.paid?.commission || 0;
+
+  return (
+    <View style={{ flex: 1 }}>
+      <ScrollView horizontal contentContainerStyle={{ padding: 12, gap: 8, flexDirection: 'row-reverse' }} showsHorizontalScrollIndicator={false}>
+        <View style={[styles.commStat, { backgroundColor: '#fef3c7' }]}>
+          <Text style={[styles.commStatV, { color: '#92400e' }]}>{Math.round(totalPending).toLocaleString()}</Text>
+          <Text style={styles.commStatL}>مستحقة (د.ع)</Text>
+        </View>
+        <View style={[styles.commStat, { backgroundColor: '#dcfce7' }]}>
+          <Text style={[styles.commStatV, { color: '#166534' }]}>{Math.round(totalPaid).toLocaleString()}</Text>
+          <Text style={styles.commStatL}>مدفوعة (د.ع)</Text>
+        </View>
+        <View style={[styles.commStat, { backgroundColor: '#dbeafe' }]}>
+          <Text style={[styles.commStatV, { color: '#1e40af' }]}>{(stats.submitted?.count || 0)}</Text>
+          <Text style={styles.commStatL}>بانتظار التأكيد</Text>
+        </View>
+      </ScrollView>
+
+      <View style={styles.filterRow}>
+        {(['all', 'pending', 'submitted', 'paid'] as const).map(f => (
+          <TouchableOpacity key={f} testID={`comm-filter-${f}`} style={[styles.chip, filter === f && styles.chipActive]} onPress={() => setFilter(f)}>
+            <Text style={[styles.chipTxt, filter === f && styles.chipTxtActive]}>
+              {f === 'all' ? 'الكل' : STATUS_META[f]?.label || f}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <FlatList
+        data={data.records || []}
+        keyExtractor={(r: any) => r.id}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />}
+        contentContainerStyle={{ padding: 12, gap: 8, paddingBottom: 24 }}
+        renderItem={({ item }) => {
+          const stt = STATUS_META[item.status] || STATUS_META.pending;
+          return (
+            <View style={styles.commCard} testID={`adm-comm-${item.id}`}>
+              <View style={styles.orderHead}>
+                <View style={[styles.statusPill, { backgroundColor: stt.bg }]}>
+                  <Text style={[styles.statusTxt, { color: stt.color }]}>{stt.label}</Text>
+                </View>
+                <View style={{ flex: 1, alignItems: 'flex-end' }}>
+                  <Text style={styles.userName}>{item.supplier_name}</Text>
+                  <Text style={styles.userMeta}>صيدلية: {item.pharmacy_name || '—'} · {new Date(item.created_at).toLocaleDateString('ar')}</Text>
+                </View>
+              </View>
+              <View style={styles.commRow}>
+                <Text style={styles.userMeta}>قيمة الطلبية: <Text style={styles.commVal}>{Math.round(item.order_total).toLocaleString()} د.ع</Text></Text>
+                <Text style={styles.userMeta}>العمولة (4%): <Text style={[styles.commVal, { color: colors.primary }]}>{Math.round(item.commission).toLocaleString()} د.ع</Text></Text>
+              </View>
+              <View style={styles.commActions}>
+                {item.status === 'submitted' && (
+                  <TouchableOpacity testID={`adm-view-proof-${item.id}`} style={[styles.miniBtn, { backgroundColor: '#dbeafe', borderColor: '#1e40af' }]} onPress={() => viewProof(item)}>
+                    <Text style={[styles.miniBtnTxt, { color: '#1e40af' }]}>عرض الإثبات</Text>
+                  </TouchableOpacity>
+                )}
+                {item.status !== 'paid' && (
+                  <TouchableOpacity testID={`adm-confirm-pay-${item.id}`} style={[styles.miniBtn, { backgroundColor: colors.primary, borderColor: colors.primary }]} onPress={() => confirmPayment(item)} disabled={busy === item.id}>
+                    {busy === item.id ? <ActivityIndicator color="#fff" size="small" /> : <Text style={[styles.miniBtnTxt, { color: '#fff' }]}>تأكيد الدفع</Text>}
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+          );
+        }}
+        ListEmptyComponent={<Text style={styles.empty}>لا توجد عمولات</Text>}
+      />
+
+      <Modal visible={!!proofRec} animationType="slide" transparent onRequestClose={() => { setProofRec(null); setProofB64(null); }}>
+        <View style={styles.modalWrap}>
+          <View style={[styles.modal, { maxHeight: '85%' }]}>
+            <View style={styles.modalHead}>
+              <Text style={styles.modalTitle}>إثبات الدفع</Text>
+              <TouchableOpacity onPress={() => { setProofRec(null); setProofB64(null); }}><Ionicons name="close" size={24} color={colors.textPrimary} /></TouchableOpacity>
+            </View>
+            {!proofB64 ? <ActivityIndicator color={colors.primary} style={{ padding: 20 }} /> : (
+              <ScrollView contentContainerStyle={{ alignItems: 'center', paddingBottom: 12 }}>
+                {proofB64.startsWith('JVBER') || proofB64.startsWith('UEsDB') ? (
+                  <Text style={{ padding: 20, textAlign: 'center', color: colors.textSecondary }}>📄 ملف PDF (تم استلامه)</Text>
+                ) : (
+                  <View style={{ width: '100%', alignItems: 'center' }}>
+                    <Text style={{ marginBottom: 8, color: colors.textSecondary }}>📷 صورة الإثبات</Text>
+                    {/* eslint-disable-next-line @typescript-eslint/no-require-imports */}
+                    <View style={{ width: '100%', height: 360, backgroundColor: '#000', borderRadius: 10, overflow: 'hidden' }}>
+                      <ProofImage b64={proofB64} />
+                    </View>
+                  </View>
+                )}
+              </ScrollView>
+            )}
+            {proofRec && proofRec.status !== 'paid' && (
+              <TouchableOpacity testID={`modal-confirm-pay-${proofRec.id}`} style={[styles.composeBtn, { marginTop: 8 }]} onPress={() => confirmPayment(proofRec)} disabled={busy === proofRec.id}>
+                {busy === proofRec.id ? <ActivityIndicator color="#fff" /> : <Text style={styles.composeTxt}>تأكيد الدفع</Text>}
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+function ProofImage({ b64 }: { b64: string }) {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { Image } = require('react-native');
+  const src = b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}`;
+  return <Image source={{ uri: src }} style={{ width: '100%', height: '100%' }} resizeMode="contain" />;
+}
+
 // ----- Notifications -----
 function Notifications({ token }: { token: string }) {
   const [list, setList] = useState<any[]>([]);
@@ -535,4 +703,12 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 18, fontWeight: '800', color: colors.textPrimary },
   label: { fontSize: 12, color: colors.textSecondary, marginBottom: 6, textAlign: 'right', fontWeight: '600', marginTop: 8 },
   input: { backgroundColor: colors.background, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, borderWidth: 1, borderColor: colors.border },
+  // Commissions
+  commStat: { borderRadius: 14, paddingHorizontal: 16, paddingVertical: 12, alignItems: 'flex-end', minWidth: 130 },
+  commStatV: { fontSize: 18, fontWeight: '900' },
+  commStatL: { fontSize: 11, color: colors.textSecondary, marginTop: 2 },
+  commCard: { backgroundColor: colors.surface, borderRadius: 14, padding: 12, borderWidth: 1, borderColor: colors.border, gap: 8 },
+  commRow: { flexDirection: 'row-reverse', justifyContent: 'space-between', flexWrap: 'wrap', gap: 4 },
+  commVal: { fontWeight: '800', color: colors.textPrimary },
+  commActions: { flexDirection: 'row-reverse', gap: 8, flexWrap: 'wrap' },
 });

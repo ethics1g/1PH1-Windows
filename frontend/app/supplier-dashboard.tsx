@@ -98,6 +98,20 @@ export default function SupplierDashboard() {
             </View>
             <Ionicons name="chevron-back" size={22} color="#fff" />
           </TouchableOpacity>
+
+          <TouchableOpacity
+            testID="btn-commissions"
+            style={styles.commissionCard}
+            activeOpacity={0.85}
+            onPress={() => router.push({ pathname: '/commissions' } as any)}
+          >
+            <View style={styles.commissionIcon}><Ionicons name="cash" size={26} color="#fff" /></View>
+            <View style={{ flex: 1, alignItems: 'flex-end' }}>
+              <Text style={styles.aiTitle}>عمولاتي</Text>
+              <Text style={styles.aiSub}>الرصيد المستحق + رفع إثبات الدفع</Text>
+            </View>
+            <Ionicons name="chevron-back" size={22} color="#fff" />
+          </TouchableOpacity>
         </View>
 
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 24 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />}>
@@ -165,4 +179,12 @@ const styles = StyleSheet.create({
   prodName: { fontSize: 15, fontWeight: '800', color: colors.textPrimary, textAlign: 'right' },
   prodPrice: { color: colors.primary, fontWeight: '800', marginTop: 2 },
   prodDesc: { color: colors.textSecondary, fontSize: 12, textAlign: 'right', marginTop: 2 },
+  // AI + Commission cards
+  aiCardWrap: { paddingHorizontal: 16, gap: 10, marginBottom: 8 },
+  aiCard: { backgroundColor: colors.indigo, borderRadius: 18, padding: 14, flexDirection: 'row-reverse', alignItems: 'center', gap: 10, shadowColor: colors.indigo, shadowOpacity: 0.25, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
+  aiIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
+  aiTitle: { color: '#fff', fontWeight: '900', fontSize: 15, textAlign: 'right' },
+  aiSub: { color: 'rgba(255,255,255,0.85)', fontSize: 11, textAlign: 'right', marginTop: 2 },
+  commissionCard: { backgroundColor: '#10b981', borderRadius: 18, padding: 14, flexDirection: 'row-reverse', alignItems: 'center', gap: 10, shadowColor: '#10b981', shadowOpacity: 0.25, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
+  commissionIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
 });
