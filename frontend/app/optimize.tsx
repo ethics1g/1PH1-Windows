@@ -37,12 +37,13 @@ export default function Optimize() {
   const commitIdRef = useRef<string>('');
 
   useEffect(() => {
+    if (!token) return; // wait for AsyncStorage hydration
     (async () => {
       try {
         const items = params.items ? JSON.parse(params.items as string) : [];
         if (!items.length) {
           Alert.alert('فارغ', 'لا توجد أدوية لتحليلها');
-          router.back();
+          router.replace('/home');
           return;
         }
         const res: OptimizeResult = await apiFetch('/orders/optimize', {
@@ -52,12 +53,12 @@ export default function Optimize() {
         setResult(res);
       } catch (e: any) {
         Alert.alert('خطأ', e.message || 'فشل التحليل');
-        router.back();
+        router.replace('/home');
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [token]);
 
   const sendWhatsApp = (group: SupplierGroup) => {
     const lines = group.items.map((it, i) => `${i + 1}. ${it.name} × ${it.quantity} = ${fmt(it.line_total)} د.ع`).join('\n');

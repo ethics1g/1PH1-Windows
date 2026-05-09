@@ -290,6 +290,21 @@ agent_communication:
         No code changes required.
     - agent: "testing"
       message: |
+        Frontend E2E (mobile 390x844):
+        ✅ TEST 2 Supplier Commissions UI — PASS (commissions card, summary, monthly, status pills, upload button)
+        ✅ TEST 3 Admin Commissions Tab — PASS (stats, filters, confirm payment works, status flips)
+        ✅ TEST 4 Data Consistency — PASS (4% rate, supplier outstanding=200 == admin pending stat=200)
+        ⚠️ TEST 1 Pharmacy Optimize+Confirm — PARTIAL: deep-link to /optimize?items=... fired POST before
+            token hydrated → 401 → blank screen. Commit flow itself is verified working via existing records.
+        ACTION: Fix race in optimize.tsx useEffect to wait for token from AsyncStorage.
+    - agent: "main"
+      message: |
+        Fixed race condition in /app/frontend/app/optimize.tsx:
+        - useEffect now gated on `if (!token) return` and depends on [token]
+        - error path redirects via router.replace('/home') instead of router.back() for safer deep-link recovery
+        Restarted expo. Ready for the user to verify or for re-run.
+    - agent: "testing"
+      message: |
         Supplier Commission System: ALL 18/18 backend assertions PASSED.
         Test driver: /app/backend_test.py (run via `python backend_test.py`).
         Verified:
