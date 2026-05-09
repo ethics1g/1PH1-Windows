@@ -24,6 +24,7 @@ db = client[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ.get('JWT_SECRET', 'dev-secret')
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
+SMS_PROVIDER = os.environ.get('SMS_PROVIDER', 'dev')  # 'dev' | 'twilio'
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -199,6 +200,192 @@ async def pharmacy_login(data: LoginInput):
         raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
     token = create_token(doc["id"], "pharmacy")
     return {"token": token, "pharmacy": {"id": doc["id"], "name": doc["name"], "phone": doc["phone"], "address": doc["address"]}}
+
+
+# ---------- Forgot Password / OTP ----------
+import secrets
+
+class ForgotPasswordIn(BaseModel):
+    phone: str
+    role: str  # "pharmacy" | "supplier"
+
+
+class VerifyOtpIn(BaseModel):
+    phone: str
+    role: str
+    otp: str
+
+
+class ResetPasswordIn(BaseModel):
+    reset_token: str
+    new_password: str
+
+
+def _otp_collection_for(role: str):
+    return db.password_reset_otps
+
+
+async def _send_sms(phone: str, otp: str) -> None:
+    if SMS_PROVIDER == "twilio":
+        try:
+            sid = os.environ.get("TWILIO_ACCOUNT_SID")
+            tok = os.environ.get("TWILIO_AUTH_TOKEN")
+            frm = os.environ.get("TWILIO_FROM_NUMBER")
+            if not (sid and tok and frm):
+                logger.warning("Twilio env missing, falling back to log")
+                logger.info(f"[SMS-FALLBACK] phone={phone} otp={otp}")
+                return
+            from twilio.rest import Client
+            client = Client(sid, tok)
+            client.messages.create(
+                body=f"رمز التحقق: {otp} - يفقد صلاحيته خلال 10 دقائق",
+                from_=frm, to=phone,
+            )
+        except Exception:
+            logger.exception("twilio send failed")
+            logger.info(f"[SMS-FALLBACK] phone={phone} otp={otp}")
+    else:
+        logger.info(f"[SMS-DEV] phone={phone} otp={otp}")
+
+
+async def _check_rate_limit(phone: str, role: str) -> None:
+    """Max 3 OTP requests per phone+role per hour."""
+    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    cnt = await db.password_reset_otps.count_documents({
+        "phone": phone,
+        "role": role,
+        "created_at": {"$gte": one_hour_ago.isoformat()},
+    })
+    if cnt >= 3:
+        raise HTTPException(status_code=429, detail="عدد الطلبات تجاوز الحد. حاول بعد ساعة.")
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(data: ForgotPasswordIn):
+    if data.role not in ("pharmacy", "supplier"):
+        raise HTTPException(status_code=400, detail="role غير صالح")
+
+    coll = db.pharmacies if data.role == "pharmacy" else db.suppliers
+    user = await coll.find_one({"phone": data.phone}, {"_id": 0})
+    # Always rate-limit even for non-existent phones (don't leak existence)
+    await _check_rate_limit(data.phone, data.role)
+
+    # Always pretend success but only generate OTP if user exists
+    if user:
+        otp_plain = f"{secrets.randbelow(1_000_000):06d}"
+        otp_hash = hashlib.sha256(otp_plain.encode()).hexdigest()
+        # Invalidate any active OTPs
+        await db.password_reset_otps.update_many(
+            {"phone": data.phone, "role": data.role, "used": False},
+            {"$set": {"used": True}},
+        )
+        await db.password_reset_otps.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "role": data.role,
+            "phone": data.phone,
+            "otp_hash": otp_hash,
+            "attempts": 0,
+            "used": False,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        await _send_sms(data.phone, otp_plain)
+        await db.password_reset_audit.insert_one({
+            "id": str(uuid.uuid4()),
+            "phone": data.phone, "role": data.role, "action": "otp_requested",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        if SMS_PROVIDER == "dev":
+            return {"status": "ok", "dev_otp": otp_plain, "message": "في وضع التطوير، رمز OTP في الاستجابة"}
+    return {"status": "ok", "message": "إذا كان الرقم مسجلاً، سيتم إرسال رمز التحقق"}
+
+
+@api_router.post("/auth/verify-otp")
+async def verify_otp(data: VerifyOtpIn):
+    if data.role not in ("pharmacy", "supplier"):
+        raise HTTPException(status_code=400, detail="role غير صالح")
+    if not (data.otp and data.otp.isdigit() and len(data.otp) == 6):
+        raise HTTPException(status_code=400, detail="رمز OTP غير صالح")
+
+    rec = await db.password_reset_otps.find_one(
+        {"phone": data.phone, "role": data.role, "used": False},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if not rec:
+        raise HTTPException(status_code=400, detail="لا يوجد طلب نشط. اطلب رمزاً جديداً.")
+
+    # Expiry
+    if datetime.fromisoformat(rec["expires_at"]) < datetime.now(timezone.utc):
+        await db.password_reset_otps.update_one({"id": rec["id"]}, {"$set": {"used": True}})
+        raise HTTPException(status_code=400, detail="انتهت صلاحية الرمز. اطلب رمزاً جديداً.")
+
+    # Attempt limit (max 3)
+    if rec["attempts"] >= 3:
+        await db.password_reset_otps.update_one({"id": rec["id"]}, {"$set": {"used": True}})
+        raise HTTPException(status_code=429, detail="تجاوزت 3 محاولات. اطلب رمزاً جديداً.")
+
+    submitted_hash = hashlib.sha256(data.otp.encode()).hexdigest()
+    if submitted_hash != rec["otp_hash"]:
+        await db.password_reset_otps.update_one(
+            {"id": rec["id"]}, {"$inc": {"attempts": 1}},
+        )
+        remaining = 3 - rec["attempts"] - 1
+        raise HTTPException(status_code=400, detail=f"رمز غير صحيح. {remaining} محاولات متبقية.")
+
+    # Success → mark used + issue short reset token
+    await db.password_reset_otps.update_one({"id": rec["id"]}, {"$set": {"used": True}})
+    payload = {
+        "sub": rec["user_id"],
+        "role": rec["role"],
+        "purpose": "password_reset",
+        "otp_id": rec["id"],
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
+    }
+    reset_token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    await db.password_reset_audit.insert_one({
+        "id": str(uuid.uuid4()),
+        "phone": data.phone, "role": data.role, "action": "otp_verified",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"reset_token": reset_token, "expires_in": 900}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(data: ResetPasswordIn):
+    try:
+        payload = jwt.decode(data.reset_token, JWT_SECRET, algorithms=["HS256"])
+    except Exception:
+        raise HTTPException(status_code=401, detail="رمز إعادة التعيين غير صالح أو منتهٍ")
+    if payload.get("purpose") != "password_reset":
+        raise HTTPException(status_code=401, detail="رمز إعادة التعيين غير صالح")
+    if not data.new_password or len(data.new_password) < 6:
+        raise HTTPException(status_code=400, detail="كلمة المرور يجب أن تكون 6 أحرف على الأقل")
+
+    # Ensure the OTP record was used and not reused
+    otp_id = payload.get("otp_id")
+    used_rec = await db.password_reset_otps.find_one({"id": otp_id}, {"_id": 0})
+    if not used_rec or used_rec.get("token_consumed"):
+        raise HTTPException(status_code=401, detail="هذا الرمز تم استخدامه سابقاً")
+
+    coll = db.pharmacies if payload["role"] == "pharmacy" else db.suppliers
+    result = await coll.update_one(
+        {"id": payload["sub"]},
+        {"$set": {"password": hash_password(data.new_password)}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="المستخدم غير موجود")
+
+    # Mark token as consumed (single-use)
+    await db.password_reset_otps.update_one({"id": otp_id}, {"$set": {"token_consumed": True}})
+    await db.password_reset_audit.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": payload["sub"], "role": payload["role"],
+        "action": "password_reset_completed",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"status": "ok", "message": "تم تغيير كلمة المرور بنجاح"}
 
 
 # ---------- Auth - Supplier ----------

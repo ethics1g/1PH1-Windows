@@ -173,6 +173,16 @@ export default function Login() {
               </>
             )}
           </TouchableOpacity>
+
+          {mode === 'login' && (
+            <TouchableOpacity
+              testID="btn-forgot-password"
+              style={styles.forgotLink}
+              onPress={() => router.push({ pathname: '/forgot-password' } as any)}
+            >
+              <Text style={styles.forgotTxt}>نسيت الرمز السري؟</Text>
+            </TouchableOpacity>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -212,4 +222,6 @@ const styles = StyleSheet.create({
     marginTop: 16, shadowColor: colors.primary, shadowOpacity: 0.3, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 6,
   },
   submitTxt: { color: '#fff', fontSize: 17, fontWeight: '800' },
+  forgotLink: { padding: 16, alignItems: 'center' },
+  forgotTxt: { color: colors.secondaryDark, fontWeight: '700', fontSize: 14 },
 });

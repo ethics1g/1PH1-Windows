@@ -1,0 +1,43 @@
+{
+  "summary": "Backend testing of Forgot Password / OTP Reset flow. 15/15 new tests pass. Full backend suite 71/71 passing (no regressions). Validated all 12 acceptance criteria: invalid role 400, generic 'ok' for unknown phones (no enumeration), dev mode returns dev_otp, rate-limit 3/hour with 4th -> 429, OTP must be 6-digit numeric (else 400), 3 wrong attempts invalidate the OTP, correct OTP issues 15-min reset_token JWT and marks OTP used, reset-password rejects short password (<6) with 400, reset works for both pharmacy and supplier (old pw fails after, new pw logs in), reset_token is single-use (second call -> 401), audit trail entries (otp_requested, otp_verified, password_reset_completed) present in db.password_reset_audit, and the seeded pharmacy 07700000001/pass123 + supplier 07811111111/sup1 still log in (regression safe).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/forgot-password", "issue": "_check_rate_limit() runs AFTER the existence check is computed but BEFORE OTP creation. Rate limit counter uses isoformat string comparison via $gte against ISO strings — works correctly because Python isoformat is lex-ordered, but a stored datetime would be safer/cleaner."},
+      {"endpoint": "POST /api/auth/forgot-password", "issue": "Rate limit is enforced only when the phone exists (since count_documents counts only created OTP records). Non-existent phones can be probed unlimited times without 429. Not a leak (no body difference) but enables unthrottled enumeration probing."},
+      {"endpoint": "POST /api/auth/verify-otp", "issue": "Error message 'remaining = 3 - rec[attempts] - 1' is leaked to client and decreases on each wrong attempt. Acceptable UX, but technically reveals attempt-counter state. Consider 'try again' generic message."},
+      {"endpoint": "POST /api/auth/reset-password", "issue": "JWT_SECRET in .env is 28 bytes; PyJWT logs InsecureKeyLengthWarning (RFC 7518 recommends >=32 bytes for HS256). Pre-existing issue, surfaced by reset_token signing as well. Suggest extending JWT_SECRET to >=32 chars."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_password_reset.py",
+    "/app/test_reports/pytest/pytest_password_reset_results.xml"
+  ],
+  "action_items": [
+    "Optional: Extend JWT_SECRET in /app/backend/.env to 32+ bytes to silence InsecureKeyLengthWarning.",
+    "Optional: Apply the rate-limit BEFORE the existence lookup so unknown phones cannot be probed without throttling.",
+    "Optional: Make the verify-otp wrong-OTP message generic instead of revealing remaining attempts."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~1030 lines — exceeds the 700-line guideline. Auth + OTP + medicines + orders + supplier + catalog all live in one file. Consider splitting into routers/auth.py, routers/medicines.py, routers/supplier.py.",
+    "Password hashing still uses raw sha256 (no salt). For a real reset-password flow, bcrypt/argon2 should be used; sha256 alone is fast and rainbow-table vulnerable. Pre-existing, but highlighted by introducing reset.",
+    "_otp_collection_for(role) helper is defined but unused (returns the same collection for both roles). Either remove or actually segregate per role.",
+    "import secrets is placed mid-file (line 206) instead of with other imports at the top.",
+    "reset-password does not invalidate user sessions / tokens issued before reset. Existing JWTs (30-day expiry) remain valid after a password change — typical security best practice would rotate or version the secret/jti."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_password_reset.py (created)"
+  ],
+  "success_rate": {"backend": "100% (15/15 new, 71/71 overall)", "frontend": "n/a (backend-only request)"},
+  "seed_data_creation": "Each test registers an ephemeral pharmacy/supplier with phone prefix 0779/0788 + random suffix and TEARS DOWN (deletes pharmacies/suppliers/password_reset_otps/password_reset_audit) in the finally block / module fixture. Seeded credentials 07700000001/pass123 and 07811111111/sup1 are NOT touched and verified working at end of run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Tests at /app/backend/tests/test_password_reset.py. Uses pymongo for direct DB inspection (audit + OTP record state). Run with EXPO_PUBLIC_BACKEND_URL set. Each test_class auto-registers fresh users so re-runs are idempotent. Seeded creds are restored implicitly (never modified). 15 tests, ~4s.",
+  "rca_of_issue": "n/a — feature works end-to-end as designed; only minor advisory items above"
+}

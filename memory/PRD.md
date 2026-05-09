@@ -29,6 +29,7 @@ Arabic (RTL) mobile app for pharmacies and wholesale suppliers ("مذاخر"). G
 
 ## Endpoints
 - `POST /api/pharmacy/register|login`, `POST /api/supplier/register|login`, `GET /api/me`
+- `POST /api/auth/forgot-password`, `POST /api/auth/verify-otp`, `POST /api/auth/reset-password` ⭐ NEW
 - `GET/POST/PATCH/DELETE /api/medicines`, `GET /api/medicines/barcode/{code}`
 - `POST /api/medicines/sell` (deducts qty, returns total)
 - `POST /api/medicines/buy` (adds/updates inventory)
