@@ -573,6 +573,7 @@ async def create_order(data: OrderCreate, user: dict = Depends(require_role("pha
         "id": str(uuid.uuid4()),
         "pharmacy_id": user["sub"],
         "items": [item.dict() for item in data.items],
+        "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.orders.insert_one(order.copy())
@@ -1205,7 +1206,10 @@ async def admin_delete_user(role: str, user_id: str, user: dict = Depends(requir
 @api_router.get("/admin/orders")
 async def admin_orders(status: Optional[str] = None, user: dict = Depends(require_role("admin"))):
     q: dict = {}
-    if status:
+    if status == "pending":
+        # Legacy orders without status field are treated as pending
+        q = {"$or": [{"status": "pending"}, {"status": {"$exists": False}}]}
+    elif status:
         q["status"] = status
     docs = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
     # Enrich pharmacy name
@@ -1296,7 +1300,9 @@ async def admin_list_notifications(user: dict = Depends(require_role("admin"))):
 
 @api_router.delete("/admin/notifications/{notif_id}")
 async def admin_delete_notification(notif_id: str, user: dict = Depends(require_role("admin"))):
-    await db.notifications.delete_one({"id": notif_id})
+    res = await db.notifications.delete_one({"id": notif_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="الإشعار غير موجود")
     return {"status": "ok"}
 
 

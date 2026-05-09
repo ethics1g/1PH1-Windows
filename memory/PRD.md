@@ -27,20 +27,34 @@ Arabic (RTL) mobile app for pharmacies and wholesale suppliers ("مذاخر"). G
 - **Backend**: FastAPI + Motor + MongoDB, JWT auth (HS256)
 - **AI**: Gemini 3 Flash via emergentintegrations library + Emergent LLM Key
 
+## Roles (RBAC)
+- **admin**: full system access (auto-seeded on first server start, phone=`0000000000`, password=`admin123`, must_change_password)
+- **pharmacy**: own inventory + sell + buy + create orders
+- **supplier**: own products + catalog import
+
 ## Endpoints
-- `POST /api/pharmacy/register|login`, `POST /api/supplier/register|login`, `GET /api/me`
-- `POST /api/auth/forgot-password`, `POST /api/auth/verify-otp`, `POST /api/auth/reset-password` ⭐ NEW
+- `POST /api/pharmacy/register|login`, `POST /api/supplier/register|login`, `POST /api/admin/login`, `GET /api/me`
+- `POST /api/admin/change-password`
+- `POST /api/auth/forgot-password`, `POST /api/auth/verify-otp`, `POST /api/auth/reset-password`
 - `GET/POST/PATCH/DELETE /api/medicines`, `GET /api/medicines/barcode/{code}`
 - `POST /api/medicines/sell` (deducts qty, returns total)
 - `POST /api/medicines/buy` (adds/updates inventory)
 - `POST /api/medicines/identify` (image base64 → name)
-- `POST/GET /api/orders`
+- `POST/GET /api/orders` (pharmacy creates with status='pending')
 - `POST /api/orders/optimize` — Smart Multi-Pharmacy Price Optimization
 - `GET/POST/DELETE /api/supplier/products`, `GET /api/marketplace`
-- `POST /api/supplier/catalog/upload` ⭐ NEW — AI Catalog Import (PDF/Image)
-- `GET /api/supplier/catalog/jobs`, `GET /api/supplier/catalog/jobs/{id}`
-- `PATCH /api/supplier/catalog/items/{id}` (edit/approve/reject + saves correction)
-- `POST /api/supplier/catalog/jobs/{id}/publish` (publishes auto+approved items)
+- `POST /api/supplier/catalog/upload`, `GET /api/supplier/catalog/jobs`, `GET /api/supplier/catalog/jobs/{id}`, `PATCH /api/supplier/catalog/items/{id}`, `POST /api/supplier/catalog/jobs/{id}/publish`
+- **Admin** (require_role='admin'):
+  - `GET /api/admin/stats` — overview counts + revenue
+  - `GET /api/admin/users` (?role=...), `PATCH /api/admin/users/{role}/{id}` (disable/enable), `DELETE /api/admin/users/{role}/{id}` (cascade)
+  - `GET /api/admin/orders` (?status=...), `PATCH /api/admin/orders/{id}` (status)
+  - `GET /api/admin/products` (?kind=...), `DELETE /api/admin/products/{kind}/{id}`
+  - `POST/GET /api/admin/notifications`, `DELETE /api/admin/notifications/{id}`
+  - `GET /api/admin/audit-logs` (?action=...)
+- `GET /api/notifications/active` — any logged-in user fetches active broadcasts for their role + 'all'
+
+## Audit Log Actions
+`login`, `login_failed`, `password_change`, `user_disabled`, `user_enabled`, `user_deleted`, `product_deleted`
 
 ## AI Supplier Catalog Import (new)
 Suppliers upload a PDF/image price-list. Backend pipeline (async via FastAPI BackgroundTasks):
