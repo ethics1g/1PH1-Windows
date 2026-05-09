@@ -1047,20 +1047,25 @@ async def shutdown_db_client():
 
 @app.on_event("startup")
 async def seed_admin():
-    """Create the default admin if no admin exists."""
-    existing = await db.admins.find_one({}, {"_id": 0})
-    if existing:
-        return
-    await db.admins.insert_one({
-        "id": str(uuid.uuid4()),
-        "email": "admin@system.local",
-        "phone": "0000000000",
-        "password": hash_password("admin123"),
-        "must_change_password": True,
-        "disabled": False,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    logger.info("Seeded default admin: phone=0000000000 password=admin123")
+    """Ensure default admins exist (idempotent)."""
+    SEEDS = [
+        {"email": "admin@system.local", "phone": "0000000000", "password": "admin123"},
+        {"email": "rasool@system.local", "phone": "07823567874", "password": "Rasooll$123"},
+    ]
+    for s in SEEDS:
+        existing = await db.admins.find_one({"phone": s["phone"]}, {"_id": 0})
+        if existing:
+            continue
+        await db.admins.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": s["email"],
+            "phone": s["phone"],
+            "password": hash_password(s["password"]),
+            "must_change_password": True,
+            "disabled": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"Seeded admin: phone={s['phone']}")
 
 
 # ---------- Audit log helper ----------
