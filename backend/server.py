@@ -70,6 +70,15 @@ def require_role(required_role: str):
     return _dep
 
 
+# ---------- Pagination helper ----------
+def _paginate(skip: int, limit: int, default: int = 100, hard_max: int = 500) -> tuple[int, int]:
+    """Clamp pagination params to safe bounds."""
+    s = max(0, int(skip or 0))
+    lim = int(limit) if limit and limit > 0 else default
+    lim = max(1, min(lim, hard_max))
+    return s, lim
+
+
 # ---------- Models ----------
 class PharmacyRegister(BaseModel):
     name: str
@@ -444,8 +453,9 @@ async def me(user: dict = Depends(get_current_user)):
 
 # ---------- Medicines (Pharmacy) ----------
 @api_router.get("/medicines")
-async def list_medicines(user: dict = Depends(require_role("pharmacy"))):
-    docs = await db.medicines.find({"pharmacy_id": user["sub"]}, {"_id": 0}).to_list(5000)
+async def list_medicines(skip: int = 0, limit: int = 200, user: dict = Depends(require_role("pharmacy"))):
+    s, lim = _paginate(skip, limit, default=200, hard_max=500)
+    docs = await db.medicines.find({"pharmacy_id": user["sub"]}, {"_id": 0}).skip(s).limit(lim).to_list(lim)
     return docs
 
 
@@ -582,15 +592,17 @@ async def create_order(data: OrderCreate, user: dict = Depends(require_role("pha
 
 
 @api_router.get("/orders")
-async def list_orders(user: dict = Depends(require_role("pharmacy"))):
-    docs = await db.orders.find({"pharmacy_id": user["sub"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+async def list_orders(skip: int = 0, limit: int = 100, user: dict = Depends(require_role("pharmacy"))):
+    s, lim = _paginate(skip, limit, default=100, hard_max=500)
+    docs = await db.orders.find({"pharmacy_id": user["sub"]}, {"_id": 0}).sort("created_at", -1).skip(s).limit(lim).to_list(lim)
     return docs
 
 
 # ---------- Supplier Products ----------
 @api_router.get("/supplier/products")
-async def list_my_products(user: dict = Depends(require_role("supplier"))):
-    docs = await db.supplier_products.find({"supplier_id": user["sub"]}, {"_id": 0}).to_list(5000)
+async def list_my_products(skip: int = 0, limit: int = 200, user: dict = Depends(require_role("supplier"))):
+    s, lim = _paginate(skip, limit, default=200, hard_max=500)
+    docs = await db.supplier_products.find({"supplier_id": user["sub"]}, {"_id": 0}).skip(s).limit(lim).to_list(lim)
     return docs
 
 
@@ -865,6 +877,15 @@ async def catalog_upload(
     file_size = (len(data.file_b64) * 3) // 4
     if file_size > 12 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="حجم الملف يتجاوز 12MB")
+    # Validate accepted types: pdf, image/*, xlsx/xls
+    ft = (data.file_type or "").lower()
+    fn = (data.filename or "").lower()
+    accepted = (ft.startswith("image/") or ft in ("pdf", "application/pdf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel", "xlsx", "xls")
+        or fn.endswith((".pdf", ".jpg", ".jpeg", ".png", ".webp", ".xlsx", ".xls", ".xlsm")))
+    if not accepted:
+        raise HTTPException(status_code=400, detail="نوع الملف غير مدعوم. الأنواع المدعومة: PDF, Image, Excel")
     job_id = str(uuid.uuid4())
     job = {
         "id": job_id,
@@ -885,6 +906,18 @@ async def catalog_upload(
     await db.import_jobs.insert_one(job.copy())
     background_tasks.add_task(catalog_import.process_import_job, db, job_id)
     return {"job_id": job_id, "status": "pending"}
+
+
+@api_router.get("/supplier/catalog/template")
+async def download_excel_template(user: dict = Depends(require_role("supplier"))):
+    """Return a sample .xlsx supplier can fill in and re-upload."""
+    from fastapi.responses import Response
+    data = catalog_import.build_excel_template()
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="catalog_template.xlsx"'},
+    )
 
 
 @api_router.get("/supplier/catalog/jobs")
@@ -1216,17 +1249,18 @@ async def admin_stats(user: dict = Depends(require_role("admin"))):
 
 # ---------- Admin: Users ----------
 @api_router.get("/admin/users")
-async def admin_users(role: Optional[str] = None, user: dict = Depends(require_role("admin"))):
+async def admin_users(role: Optional[str] = None, skip: int = 0, limit: int = 200, user: dict = Depends(require_role("admin"))):
+    s, lim = _paginate(skip, limit, default=200, hard_max=500)
     out: list[dict] = []
     if role in (None, "pharmacy"):
-        ps = await db.pharmacies.find({}, {"_id": 0, "password": 0}).to_list(2000)
+        ps = await db.pharmacies.find({}, {"_id": 0, "password": 0}).skip(s if role == "pharmacy" else 0).limit(lim).to_list(lim)
         for p in ps:
             p["role"] = "pharmacy"
         out.extend(ps)
     if role in (None, "supplier"):
-        ss = await db.suppliers.find({}, {"_id": 0, "password": 0}).to_list(2000)
-        for s in ss:
-            s["role"] = "supplier"
+        ss = await db.suppliers.find({}, {"_id": 0, "password": 0}).skip(s if role == "supplier" else 0).limit(lim).to_list(lim)
+        for s_ in ss:
+            s_["role"] = "supplier"
         out.extend(ss)
     return out
 
@@ -1269,14 +1303,15 @@ async def admin_delete_user(role: str, user_id: str, user: dict = Depends(requir
 
 # ---------- Admin: Orders ----------
 @api_router.get("/admin/orders")
-async def admin_orders(status: Optional[str] = None, user: dict = Depends(require_role("admin"))):
+async def admin_orders(status: Optional[str] = None, skip: int = 0, limit: int = 200, user: dict = Depends(require_role("admin"))):
+    s, lim = _paginate(skip, limit, default=200, hard_max=500)
     q: dict = {}
     if status == "pending":
         # Legacy orders without status field are treated as pending
         q = {"$or": [{"status": "pending"}, {"status": {"$exists": False}}]}
     elif status:
         q["status"] = status
-    docs = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    docs = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).skip(s).limit(lim).to_list(lim)
     # Enrich pharmacy name
     pharmacy_ids = list({d["pharmacy_id"] for d in docs})
     pharmas = await db.pharmacies.find({"id": {"$in": pharmacy_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
@@ -1300,17 +1335,18 @@ async def admin_update_order(order_id: str, body: dict, user: dict = Depends(req
 
 # ---------- Admin: Products (medicines + supplier_products) ----------
 @api_router.get("/admin/products")
-async def admin_products(kind: Optional[str] = None, user: dict = Depends(require_role("admin"))):
+async def admin_products(kind: Optional[str] = None, skip: int = 0, limit: int = 200, user: dict = Depends(require_role("admin"))):
+    s, lim = _paginate(skip, limit, default=200, hard_max=500)
     out: list[dict] = []
     if kind in (None, "medicine"):
-        meds = await db.medicines.find({}, {"_id": 0}).to_list(5000)
+        meds = await db.medicines.find({}, {"_id": 0}).skip(s if kind == "medicine" else 0).limit(lim).to_list(lim)
         for m in meds:
             m["kind"] = "medicine"
         out.extend(meds)
     if kind in (None, "supplier_product"):
-        sp = await db.supplier_products.find({}, {"_id": 0}).to_list(5000)
-        for s in sp:
-            s["kind"] = "supplier_product"
+        sp = await db.supplier_products.find({}, {"_id": 0}).skip(s if kind == "supplier_product" else 0).limit(lim).to_list(lim)
+        for s_ in sp:
+            s_["kind"] = "supplier_product"
         out.extend(sp)
     return out
 
@@ -1482,14 +1518,16 @@ def _monthly_summary(records: list[dict]) -> list[dict]:
 
 
 @api_router.get("/supplier/commissions")
-async def supplier_commissions(user: dict = Depends(require_role("supplier"))):
+async def supplier_commissions(skip: int = 0, limit: int = 200,
+                               user: dict = Depends(require_role("supplier"))):
+    s, lim = _paginate(skip, limit, default=200, hard_max=500)
     records = await db.supplier_sales.find(
         {"supplier_id": user["sub"]},
         {"_id": 0, "payment_proof_b64": 0},  # don't ship the heavy proof
-    ).sort("created_at", -1).to_list(2000)
+    ).sort("created_at", -1).skip(s).limit(lim).to_list(lim)
     full_records = await db.supplier_sales.find(
-        {"supplier_id": user["sub"]}, {"_id": 0}
-    ).to_list(2000)
+        {"supplier_id": user["sub"]}, {"_id": 0, "payment_proof_b64": 0}
+    ).to_list(5000)
     summary = _monthly_summary(full_records)
     outstanding = round(sum(r["pending_commission"] for r in summary), 2)
     total_due = round(sum(r["total_commission"] for r in summary), 2)
@@ -1537,13 +1575,15 @@ class AdminManualCommissionIn(BaseModel):
 
 @api_router.get("/admin/commissions")
 async def admin_commissions(status: Optional[str] = None, supplier_id: Optional[str] = None,
+                            skip: int = 0, limit: int = 200,
                             user: dict = Depends(require_role("admin"))):
+    s, lim = _paginate(skip, limit, default=200, hard_max=500)
     q: dict = {}
     if status:
         q["status"] = status
     if supplier_id:
         q["supplier_id"] = supplier_id
-    records = await db.supplier_sales.find(q, {"_id": 0, "payment_proof_b64": 0}).sort("created_at", -1).to_list(5000)
+    records = await db.supplier_sales.find(q, {"_id": 0, "payment_proof_b64": 0}).sort("created_at", -1).skip(s).limit(lim).to_list(lim)
     # Aggregate stats
     agg = await db.supplier_sales.aggregate([
         {"$group": {"_id": "$status", "count": {"$sum": 1},

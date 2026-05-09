@@ -143,6 +143,8 @@ const styles = StyleSheet.create({
   uploadBtn: { backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 16, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 8 },
   uploadBtnDisabled: { opacity: 0.5 },
   uploadTxt: { color: '#fff', fontWeight: '800', fontSize: 16 },
+  templateBtn: { backgroundColor: colors.indigoLight, borderRadius: 12, paddingVertical: 12, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 6, borderWidth: 1, borderColor: colors.indigo },
+  templateTxt: { color: colors.indigo, fontWeight: '800', fontSize: 13 },
   historyLink: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 6, padding: 10 },
   historyTxt: { color: colors.secondaryDark, fontWeight: '700' },
 });
