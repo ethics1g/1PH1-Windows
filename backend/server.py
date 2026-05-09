@@ -1193,9 +1193,12 @@ async def admin_stats(user: dict = Depends(require_role("admin"))):
     medicines_count = await db.medicines.count_documents({})
     products_count = await db.supplier_products.count_documents({})
     orders_count = await db.orders.count_documents({})
-    sales_docs = await db.sales.find({}, {"_id": 0, "total": 1}).to_list(100000)
-    revenue = sum(float(s.get("total") or 0) for s in sales_docs)
-    sales_count = len(sales_docs)
+    # Use aggregation to avoid loading all sales docs into memory
+    revenue_agg = await db.sales.aggregate([
+        {"$group": {"_id": None, "total": {"$sum": "$total"}, "count": {"$sum": 1}}}
+    ]).to_list(1)
+    revenue = float(revenue_agg[0]["total"]) if revenue_agg else 0.0
+    sales_count = int(revenue_agg[0]["count"]) if revenue_agg else 0
     catalog_jobs = await db.import_jobs.count_documents({})
     audit_count = await db.audit_logs.count_documents({})
     return {
