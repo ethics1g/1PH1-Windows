@@ -220,6 +220,18 @@ agent_communication:
         Test credentials: see /app/memory/test_credentials.md.
     - agent: "testing"
       message: |
+        ✅ ALL 18/18 backend assertions passed for Supplier Commission System.
+        - Commit endpoint, idempotency, supplier listing, monthly aggregation, upload-proof,
+          admin listing, proof retrieval, confirm payment (and idempotency of confirm),
+          supplier outstanding decrement after payment, manual admin entry, role enforcement
+          (pharmacy→403 supplier endpoint, supplier→403 admin endpoint).
+        - 4% rate verified end-to-end (order_total=3000 → commission=120; manual order_total=5000 → commission=200).
+        - Note: Primary admin password 07823567874/Rasooll$123 returned 401 (changed in earlier test).
+          Used fallback 0000000000/admin123 successfully.
+        - Note: Supplier 07811111111 was disabled; re-enabled via mongosh during test.
+        No code changes required.
+    - agent: "testing"
+      message: |
         Supplier Commission System: ALL 18/18 backend assertions PASSED.
         Test driver: /app/backend_test.py (run via `python backend_test.py`).
         Verified:

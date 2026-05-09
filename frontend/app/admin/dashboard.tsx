@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, FlatList, ActivityIndicator,
-  RefreshControl, Alert, TextInput, Modal, KeyboardAvoidingView, Platform,
+  RefreshControl, Alert, TextInput, Modal, KeyboardAvoidingView, Platform, Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -492,8 +492,6 @@ function Commissions({ token }: { token: string }) {
 }
 
 function ProofImage({ b64 }: { b64: string }) {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { Image } = require('react-native');
   const src = b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}`;
   return <Image source={{ uri: src }} style={{ width: '100%', height: '100%' }} resizeMode="contain" />;
 }
