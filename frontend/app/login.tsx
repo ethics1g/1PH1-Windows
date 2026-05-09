@@ -10,12 +10,12 @@ import { useAuth, apiFetch } from '../src/auth';
 import { colors } from '../src/theme';
 
 type Mode = 'login' | 'register';
-type Role = 'pharmacy' | 'supplier' | 'admin';
+type Role = 'pharmacy' | 'supplier';
 
 export default function Login() {
   const router = useRouter();
   const { signIn } = useAuth();
-  const [role, setRole] = useState<Role>('pharmacy');
+  const [role, setRole] = useState<Role>('pharmacy'); // for register only
   const [mode, setMode] = useState<Mode>('login');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -34,25 +34,31 @@ export default function Login() {
     }
     setLoading(true);
     try {
-      let res: any;
-      if (role === 'admin') {
-        if (mode === 'register') {
-          throw new Error('لا يمكن التسجيل كأدمن');
-        }
-        res = await apiFetch('/admin/login', { method: 'POST', body: JSON.stringify({ phone, password }) });
-        await signIn(res.token, 'admin', res.admin);
-        if (res.admin.must_change_password) {
-          router.replace('/admin/change-password');
-        } else {
-          router.replace('/admin/dashboard');
+      if (mode === 'login') {
+        // Unified login - role determined server-side
+        const res: any = await apiFetch('/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ phone, password }),
+        });
+        await signIn(res.token, res.role, res.user);
+        if (res.role === 'admin') {
+          if (res.user?.must_change_password) {
+            router.replace('/admin/change-password');
+          } else {
+            router.replace('/admin/dashboard');
+          }
+        } else if (res.role === 'pharmacy') {
+          router.replace('/home');
+        } else if (res.role === 'supplier') {
+          router.replace('/supplier-dashboard');
         }
         return;
       }
-      const path = `/${role}/${mode === 'register' ? 'register' : 'login'}`;
-      const body = mode === 'register'
-        ? { name, phone, password, address }
-        : { phone, password };
-      res = await apiFetch(path, { method: 'POST', body: JSON.stringify(body) });
+      // Register: role chosen by user, server validates (admin not creatable here)
+      const res: any = await apiFetch(`/${role}/register`, {
+        method: 'POST',
+        body: JSON.stringify({ name, phone, password, address }),
+      });
       const userObj = role === 'pharmacy' ? res.pharmacy : res.supplier;
       await signIn(res.token, role, userObj);
       router.replace(role === 'pharmacy' ? '/home' : '/supplier-dashboard');
@@ -78,32 +84,26 @@ export default function Login() {
             <Text style={styles.subtitle}>نظام ذكي للصيدليات والمذاخر</Text>
           </View>
 
-          <View style={styles.roleSwitch}>
-            <TouchableOpacity
-              testID="role-pharmacy"
-              style={[styles.roleBtn, role === 'pharmacy' && styles.roleBtnActive]}
-              onPress={() => setRole('pharmacy')}
-            >
-              <Ionicons name="medical" size={18} color={role === 'pharmacy' ? '#fff' : colors.textSecondary} />
-              <Text style={[styles.roleTxt, role === 'pharmacy' && styles.roleTxtActive]}>صيدلية</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              testID="role-supplier"
-              style={[styles.roleBtn, role === 'supplier' && styles.roleBtnActive]}
-              onPress={() => setRole('supplier')}
-            >
-              <Ionicons name="business" size={18} color={role === 'supplier' ? '#fff' : colors.textSecondary} />
-              <Text style={[styles.roleTxt, role === 'supplier' && styles.roleTxtActive]}>مذخر</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              testID="role-admin"
-              style={[styles.roleBtn, role === 'admin' && styles.roleBtnActive]}
-              onPress={() => { setRole('admin'); setMode('login'); }}
-            >
-              <Ionicons name="shield-checkmark" size={18} color={role === 'admin' ? '#fff' : colors.textSecondary} />
-              <Text style={[styles.roleTxt, role === 'admin' && styles.roleTxtActive]}>مدير</Text>
-            </TouchableOpacity>
-          </View>
+          {mode === 'register' && (
+            <View style={styles.roleSwitch}>
+              <TouchableOpacity
+                testID="role-pharmacy"
+                style={[styles.roleBtn, role === 'pharmacy' && styles.roleBtnActive]}
+                onPress={() => setRole('pharmacy')}
+              >
+                <Ionicons name="medical" size={18} color={role === 'pharmacy' ? '#fff' : colors.textSecondary} />
+                <Text style={[styles.roleTxt, role === 'pharmacy' && styles.roleTxtActive]}>صيدلية</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="role-supplier"
+                style={[styles.roleBtn, role === 'supplier' && styles.roleBtnActive]}
+                onPress={() => setRole('supplier')}
+              >
+                <Ionicons name="business" size={18} color={role === 'supplier' ? '#fff' : colors.textSecondary} />
+                <Text style={[styles.roleTxt, role === 'supplier' && styles.roleTxtActive]}>مذخر</Text>
+              </TouchableOpacity>
+            </View>
+          )}
 
           <View style={styles.tabs}>
             <TouchableOpacity

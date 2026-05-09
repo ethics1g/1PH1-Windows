@@ -1113,6 +1113,63 @@ async def admin_login(data: AdminLoginIn):
     }
 
 
+# ---------- Unified Login (role determined server-side) ----------
+@api_router.post("/auth/login")
+async def unified_login(data: LoginInput):
+    """
+    Unified login that resolves the user's role server-side from the database.
+    The role is NEVER taken from the request. Search order: admins -> pharmacies -> suppliers.
+    """
+    pwd_hash = hash_password(data.password)
+
+    admin = await db.admins.find_one({"phone": data.phone}, {"_id": 0})
+    if admin and admin["password"] == pwd_hash:
+        if admin.get("disabled"):
+            raise HTTPException(status_code=403, detail="الحساب معطل")
+        token = create_token(admin["id"], "admin")
+        await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
+            "actor": {"id": admin["id"], "role": "admin", "phone": data.phone},
+            "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
+        return {
+            "token": token, "role": "admin",
+            "user": {
+                "id": admin["id"], "email": admin.get("email"), "phone": admin["phone"],
+                "must_change_password": bool(admin.get("must_change_password", False)),
+            },
+        }
+
+    pharmacy = await db.pharmacies.find_one({"phone": data.phone}, {"_id": 0})
+    if pharmacy and pharmacy["password"] == pwd_hash:
+        if pharmacy.get("disabled"):
+            raise HTTPException(status_code=403, detail="الحساب معطل")
+        token = create_token(pharmacy["id"], "pharmacy")
+        await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
+            "actor": {"id": pharmacy["id"], "role": "pharmacy", "phone": data.phone},
+            "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
+        return {
+            "token": token, "role": "pharmacy",
+            "user": {"id": pharmacy["id"], "name": pharmacy["name"], "phone": pharmacy["phone"], "address": pharmacy["address"]},
+        }
+
+    supplier = await db.suppliers.find_one({"phone": data.phone}, {"_id": 0})
+    if supplier and supplier["password"] == pwd_hash:
+        if supplier.get("disabled"):
+            raise HTTPException(status_code=403, detail="الحساب معطل")
+        token = create_token(supplier["id"], "supplier")
+        await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
+            "actor": {"id": supplier["id"], "role": "supplier", "phone": data.phone},
+            "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
+        return {
+            "token": token, "role": "supplier",
+            "user": {"id": supplier["id"], "name": supplier["name"], "phone": supplier["phone"], "address": supplier["address"]},
+        }
+
+    await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login_failed",
+        "actor": {"phone": data.phone}, "target": {}, "meta": {},
+        "timestamp": datetime.now(timezone.utc).isoformat()})
+    raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
+
+
 @api_router.post("/admin/change-password")
 async def admin_change_password(data: AdminChangePasswordIn, user: dict = Depends(require_role("admin"))):
     doc = await db.admins.find_one({"id": user["sub"]}, {"_id": 0})
