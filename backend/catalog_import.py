@@ -191,6 +191,7 @@ def parse_excel_structured(file_b64: str) -> tuple[list[dict], dict]:
         if "name" not in fields or "price" not in fields:
             return [], meta
         items: list[dict] = []
+        rejected = 0
         for r in rows[header_row_idx + 1:]:
             if not r or all(c in (None, "") for c in r):
                 continue
@@ -212,12 +213,15 @@ def parse_excel_structured(file_b64: str) -> tuple[list[dict], dict]:
             name = (it.get("name") or "").strip()
             price = float(it.get("price") or 0)
             if not name:
+                rejected += 1
                 continue
             # Validation: require name + price > 0
             if price <= 0:
+                rejected += 1
                 continue
             items.append(it)
         meta["parsed_rows"] = len(items)
+        meta["rejected_rows"] = rejected
         meta["structured_ok"] = len(items) > 0
         return items, meta
     return [], meta
@@ -547,7 +551,7 @@ async def process_import_job(db, job_id: str) -> None:
 
         items_to_insert: list[dict] = []
         review_count = 0
-        rejected_invalid = 0
+        rejected_invalid = int((meta_extra or {}).get("rejected_rows", 0))
         for ck, it in dedup.items():
             # Validation: require name + price > 0
             if not it.get("name") or float(it.get("price") or 0) <= 0:

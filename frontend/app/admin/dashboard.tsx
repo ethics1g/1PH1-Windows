@@ -9,7 +9,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useAuth, apiFetch } from '../../src/auth';
 import { colors } from '../../src/theme';
 
-type TabKey = 'overview' | 'users' | 'orders' | 'products' | 'commissions' | 'notifications' | 'audit';
+type TabKey = 'overview' | 'users' | 'orders' | 'products' | 'commissions' | 'payment' | 'notifications' | 'audit';
 
 const TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { key: 'overview', label: 'الإحصاءات', icon: 'stats-chart' },
@@ -17,6 +17,7 @@ const TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }
   { key: 'orders', label: 'الطلبيات', icon: 'cart' },
   { key: 'products', label: 'المنتجات', icon: 'cube' },
   { key: 'commissions', label: 'العمولات', icon: 'cash' },
+  { key: 'payment', label: 'الدفع', icon: 'card' },
   { key: 'notifications', label: 'الإشعارات', icon: 'notifications' },
   { key: 'audit', label: 'السجل', icon: 'document-text' },
 ];
@@ -49,7 +50,12 @@ export default function AdminDashboard() {
         {tab === 'audit' && <AuditLogs token={token!} />}
       </View>
 
-      <View style={styles.bottomTabs}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.bottomTabs}
+        contentContainerStyle={styles.bottomTabsContent}
+      >
         {TABS.map(t => (
           <TouchableOpacity
             key={t.key}
@@ -61,7 +67,7 @@ export default function AdminDashboard() {
             <Text style={[styles.tabLabel, tab === t.key && { color: colors.primary, fontWeight: '800' }]}>{t.label}</Text>
           </TouchableOpacity>
         ))}
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -824,8 +830,9 @@ const styles = StyleSheet.create({
   hello: { color: colors.textSecondary, fontSize: 12, textAlign: 'right' },
   who: { color: colors.textPrimary, fontSize: 20, fontWeight: '800', textAlign: 'right' },
   logout: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#fee2e2', alignItems: 'center', justifyContent: 'center' },
-  bottomTabs: { flexDirection: 'row-reverse', backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: colors.border, paddingVertical: 6, paddingBottom: 12 },
-  tabBtn: { flex: 1, alignItems: 'center', gap: 2, paddingVertical: 4 },
+  bottomTabs: { backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: colors.border, maxHeight: 70 },
+  bottomTabsContent: { flexDirection: 'row-reverse', paddingHorizontal: 4, paddingVertical: 6, paddingBottom: 12, alignItems: 'center' },
+  tabBtn: { minWidth: 64, alignItems: 'center', gap: 2, paddingVertical: 4, paddingHorizontal: 6 },
   tabLabel: { fontSize: 10, color: colors.textMuted },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 30 },
   empty: { textAlign: 'center', color: colors.textMuted, padding: 30 },
