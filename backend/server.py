@@ -1976,6 +1976,7 @@ async def get_public_payment_info(user: dict = Depends(get_current_user)):
         "stripe_public_key": s.get("stripe_public_key"),
         "stripe_enabled": bool(s.get("stripe_enabled")),
         "instructions": s.get("instructions"),
+        "marketplace_mode": s.get("marketplace_mode") or "local",
         "updated_at": s.get("updated_at"),
     }
 
