@@ -21,6 +21,8 @@ export default function Login() {
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [address, setAddress] = useState('');
+  const [region, setRegion] = useState('');
+  const [country, setCountry] = useState('');
   const [loading, setLoading] = useState(false);
 
   const submit = async () => {
@@ -28,9 +30,15 @@ export default function Login() {
       Alert.alert('تنبيه', 'يرجى إدخال رقم الهاتف والرمز السري');
       return;
     }
-    if (mode === 'register' && (!name.trim() || !address.trim())) {
-      Alert.alert('تنبيه', 'يرجى تعبئة جميع الحقول');
-      return;
+    if (mode === 'register') {
+      if (!name.trim() || !address.trim()) {
+        Alert.alert('تنبيه', 'يرجى تعبئة جميع الحقول');
+        return;
+      }
+      if (!region.trim()) {
+        Alert.alert('تنبيه', 'المنطقة/المحافظة مطلوبة');
+        return;
+      }
     }
     setLoading(true);
     try {
@@ -47,6 +55,8 @@ export default function Login() {
           } else {
             router.replace('/admin/dashboard');
           }
+        } else if (res.must_set_region) {
+          router.replace('/set-region');
         } else if (res.role === 'pharmacy') {
           router.replace('/home');
         } else if (res.role === 'supplier') {
@@ -57,7 +67,7 @@ export default function Login() {
       // Register: role chosen by user, server validates (admin not creatable here)
       const res: any = await apiFetch(`/${role}/register`, {
         method: 'POST',
-        body: JSON.stringify({ name, phone, password, address }),
+        body: JSON.stringify({ name, phone, password, address, region, country: country || undefined }),
       });
       const userObj = role === 'pharmacy' ? res.pharmacy : res.supplier;
       await signIn(res.token, role, userObj);
@@ -174,6 +184,31 @@ export default function Login() {
                 value={address}
                 onChangeText={setAddress}
                 placeholder="المدينة، الشارع..."
+                placeholderTextColor={colors.textMuted}
+                textAlign="right"
+              />
+            </View>
+          )}
+
+          {mode === 'register' && (
+            <View style={styles.field}>
+              <Text style={styles.label}>المنطقة / المحافظة *</Text>
+              <TextInput
+                testID="input-region"
+                style={styles.input}
+                value={region}
+                onChangeText={setRegion}
+                placeholder="مثال: بغداد، الموصل، جدة..."
+                placeholderTextColor={colors.textMuted}
+                textAlign="right"
+              />
+              <Text style={[styles.label, { marginTop: 8 }]}>الدولة (اختياري)</Text>
+              <TextInput
+                testID="input-country"
+                style={styles.input}
+                value={country}
+                onChangeText={setCountry}
+                placeholder="مثال: العراق، السعودية..."
                 placeholderTextColor={colors.textMuted}
                 textAlign="right"
               />

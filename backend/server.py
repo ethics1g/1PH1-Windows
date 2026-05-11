@@ -79,12 +79,75 @@ def _paginate(skip: int, limit: int, default: int = 100, hard_max: int = 500) ->
     return s, lim
 
 
+# ---------- Region (Marketplace locality) ----------
+import unicodedata as _ud_region
+
+def normalize_region(s: Optional[str]) -> Optional[str]:
+    """Lowercase, strip diacritics, collapse whitespace. Used for case/diacritic-insensitive matching."""
+    if not s:
+        return None
+    t = str(s).strip()
+    if not t:
+        return None
+    # Remove Arabic diacritics
+    nfkd = _ud_region.normalize("NFKD", t)
+    t2 = "".join(c for c in nfkd if not _ud_region.combining(c))
+    # Normalize Arabic forms (alef variants, taa marbuta, yaa)
+    table = {ord('أ'): 'ا', ord('إ'): 'ا', ord('آ'): 'ا', ord('ٱ'): 'ا',
+             ord('ة'): 'ه', ord('ى'): 'ي', ord('ؤ'): 'و', ord('ئ'): 'ي'}
+    t2 = t2.translate(table)
+    t2 = t2.lower()
+    t2 = " ".join(t2.split())
+    return t2 or None
+
+
+async def get_marketplace_mode() -> str:
+    doc = await db.app_settings.find_one({"id": "payment"}, {"_id": 0, "marketplace_mode": 1})
+    mode = (doc or {}).get("marketplace_mode") or "local"
+    return mode if mode in ("local", "national") else "local"
+
+
+async def get_pharmacy_region_norm(pharmacy_id: str) -> Optional[str]:
+    p = await db.pharmacies.find_one({"id": pharmacy_id}, {"_id": 0, "region_normalized": 1})
+    return (p or {}).get("region_normalized")
+
+
+async def allowed_supplier_filter(pharmacy_id: str) -> dict:
+    """
+    Return a Mongo query fragment to restrict suppliers to same region as the pharmacy.
+    Returns {} when:
+      - marketplace_mode == 'national', OR
+      - pharmacy has no region set (degraded — pharmacy will be prompted to set region).
+    """
+    mode = await get_marketplace_mode()
+    if mode == "national":
+        return {}
+    region_norm = await get_pharmacy_region_norm(pharmacy_id)
+    if not region_norm:
+        return {}
+    return {"region_normalized": region_norm}
+
+
+async def allowed_supplier_ids(pharmacy_id: str) -> Optional[list[str]]:
+    """
+    Returns the list of supplier IDs allowed for the given pharmacy under current marketplace_mode.
+    Returns None if no restriction applies (national or pharmacy has no region).
+    """
+    flt = await allowed_supplier_filter(pharmacy_id)
+    if not flt:
+        return None
+    rows = await db.suppliers.find(flt, {"_id": 0, "id": 1}).to_list(5000)
+    return [r["id"] for r in rows]
+
+
 # ---------- Models ----------
 class PharmacyRegister(BaseModel):
     name: str
     phone: str
     password: str
     address: str
+    region: str
+    country: Optional[str] = None
 
 
 class SupplierRegister(BaseModel):
@@ -92,6 +155,13 @@ class SupplierRegister(BaseModel):
     phone: str
     password: str
     address: str
+    region: str
+    country: Optional[str] = None
+
+
+class SetRegionIn(BaseModel):
+    region: str
+    country: Optional[str] = None
 
 
 class LoginInput(BaseModel):
@@ -188,6 +258,9 @@ async def pharmacy_register(data: PharmacyRegister):
     existing = await db.pharmacies.find_one({"phone": data.phone})
     if existing:
         raise HTTPException(status_code=400, detail="رقم الهاتف مسجل مسبقاً")
+    region_norm = normalize_region(data.region)
+    if not region_norm:
+        raise HTTPException(status_code=400, detail="المنطقة/المحافظة مطلوبة")
     pharmacy_id = str(uuid.uuid4())
     doc = {
         "id": pharmacy_id,
@@ -195,11 +268,14 @@ async def pharmacy_register(data: PharmacyRegister):
         "phone": data.phone,
         "password": hash_password(data.password),
         "address": data.address,
+        "region": data.region.strip(),
+        "region_normalized": region_norm,
+        "country": (data.country or "").strip() or None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.pharmacies.insert_one(doc)
     token = create_token(pharmacy_id, "pharmacy")
-    return {"token": token, "pharmacy": {"id": pharmacy_id, "name": data.name, "phone": data.phone, "address": data.address}}
+    return {"token": token, "pharmacy": {"id": pharmacy_id, "name": data.name, "phone": data.phone, "address": data.address, "region": doc["region"], "country": doc["country"]}}
 
 
 @api_router.post("/pharmacy/login")
@@ -213,7 +289,15 @@ async def pharmacy_login(data: LoginInput):
     await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
         "actor": {"id": doc["id"], "role": "pharmacy", "phone": data.phone},
         "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
-    return {"token": token, "pharmacy": {"id": doc["id"], "name": doc["name"], "phone": doc["phone"], "address": doc["address"]}}
+    must_set_region = not bool(doc.get("region_normalized"))
+    return {
+        "token": token,
+        "pharmacy": {
+            "id": doc["id"], "name": doc["name"], "phone": doc["phone"], "address": doc.get("address"),
+            "region": doc.get("region"), "country": doc.get("country"),
+        },
+        "must_set_region": must_set_region,
+    }
 
 
 # ---------- Forgot Password / OTP ----------
@@ -412,6 +496,9 @@ async def supplier_register(data: SupplierRegister):
     existing = await db.suppliers.find_one({"phone": data.phone})
     if existing:
         raise HTTPException(status_code=400, detail="رقم الهاتف مسجل مسبقاً")
+    region_norm = normalize_region(data.region)
+    if not region_norm:
+        raise HTTPException(status_code=400, detail="المنطقة/المحافظة مطلوبة")
     supplier_id = str(uuid.uuid4())
     doc = {
         "id": supplier_id,
@@ -419,11 +506,14 @@ async def supplier_register(data: SupplierRegister):
         "phone": data.phone,
         "password": hash_password(data.password),
         "address": data.address,
+        "region": data.region.strip(),
+        "region_normalized": region_norm,
+        "country": (data.country or "").strip() or None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.suppliers.insert_one(doc)
     token = create_token(supplier_id, "supplier")
-    return {"token": token, "supplier": {"id": supplier_id, "name": data.name, "phone": data.phone, "address": data.address}}
+    return {"token": token, "supplier": {"id": supplier_id, "name": data.name, "phone": data.phone, "address": data.address, "region": doc["region"], "country": doc["country"]}}
 
 
 @api_router.post("/supplier/login")
@@ -437,7 +527,79 @@ async def supplier_login(data: LoginInput):
     await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
         "actor": {"id": doc["id"], "role": "supplier", "phone": data.phone},
         "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
-    return {"token": token, "supplier": {"id": doc["id"], "name": doc["name"], "phone": doc["phone"], "address": doc["address"]}}
+    must_set_region = not bool(doc.get("region_normalized"))
+    return {
+        "token": token,
+        "supplier": {
+            "id": doc["id"], "name": doc["name"], "phone": doc["phone"], "address": doc.get("address"),
+            "region": doc.get("region"), "country": doc.get("country"),
+        },
+        "must_set_region": must_set_region,
+    }
+
+
+@api_router.patch("/auth/set-region")
+async def set_region(data: SetRegionIn, user: dict = Depends(get_current_user)):
+    """Set or update region for the current user. Admins are not required to set region."""
+    region_norm = normalize_region(data.region)
+    if not region_norm:
+        raise HTTPException(status_code=400, detail="المنطقة/المحافظة مطلوبة")
+    updates = {
+        "region": data.region.strip(),
+        "region_normalized": region_norm,
+        "country": (data.country or "").strip() or None,
+        "region_set_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if user["role"] == "pharmacy":
+        await db.pharmacies.update_one({"id": user["sub"]}, {"$set": updates})
+        # Also propagate to existing orders/products? Not strictly necessary; region is on the user.
+    elif user["role"] == "supplier":
+        await db.suppliers.update_one({"id": user["sub"]}, {"$set": updates})
+        # Propagate region to supplier_products for fast filtering on optimize/orders.
+        await db.supplier_products.update_many(
+            {"supplier_id": user["sub"]},
+            {"$set": {"region_normalized": region_norm, "region": updates["region"]}},
+        )
+    elif user["role"] == "admin":
+        await db.admins.update_one({"id": user["sub"]}, {"$set": updates})
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()), "action": "region_set",
+        "actor": {"id": user["sub"], "role": user["role"]},
+        "target": {}, "meta": {"region": updates["region"], "country": updates["country"]},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"status": "ok", "region": updates["region"], "country": updates["country"]}
+
+
+@api_router.get("/regions/suggest")
+async def regions_suggest(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Autocomplete suggestions from existing users (pharmacies + suppliers)."""
+    pipeline = [
+        {"$match": {"region": {"$exists": True, "$ne": None}}},
+        {"$group": {"_id": "$region_normalized", "label": {"$first": "$region"},
+                    "country": {"$first": "$country"}, "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 50},
+    ]
+    pharm = await db.pharmacies.aggregate(pipeline).to_list(50)
+    supp = await db.suppliers.aggregate(pipeline).to_list(50)
+    # Merge by normalized key
+    merged: dict[str, dict] = {}
+    for r in pharm + supp:
+        k = r.get("_id")
+        if not k:
+            continue
+        if k in merged:
+            merged[k]["count"] += r.get("count", 0)
+        else:
+            merged[k] = {"region": r.get("label"), "region_normalized": k,
+                         "country": r.get("country"), "count": r.get("count", 0)}
+    items = sorted(merged.values(), key=lambda x: x["count"], reverse=True)
+    if q:
+        qn = normalize_region(q)
+        if qn:
+            items = [i for i in items if qn in (i["region_normalized"] or "")]
+    return items[:20]
 
 
 @api_router.get("/me")
@@ -619,6 +781,10 @@ async def add_supplier_product(data: SupplierProductCreate, user: dict = Depends
     )
     doc = prod.dict()
     doc["created_at"] = doc["created_at"].isoformat()
+    # Denormalize region for fast marketplace filtering
+    doc["region"] = supplier.get("region")
+    doc["region_normalized"] = supplier.get("region_normalized")
+    doc["country"] = supplier.get("country")
     await db.supplier_products.insert_one(doc.copy())
     return doc
 
@@ -626,16 +792,19 @@ async def add_supplier_product(data: SupplierProductCreate, user: dict = Depends
 @api_router.post("/orders/optimize")
 async def optimize_order(data: OptimizeRequest, user: dict = Depends(require_role("pharmacy"))):
     """
-    Compute price-optimal supplier plans for a basket.
-    Returns:
-      - per_item: cheapest supplier per item (greedy global optimum without fixed costs)
-      - single_supplier: ranked list of suppliers that can fully fulfill the basket
-      - smart_split: greedy per-item, supports splitting one item across suppliers
-                     when single-supplier qty is insufficient
-      - unavailable: items no supplier has
-      - savings: vs the most expensive option
+    Compute price-optimal supplier plans for a basket, filtered by pharmacy region (marketplace mode).
     """
-    products = await db.supplier_products.find({}, {"_id": 0}).to_list(5000)
+    # Region filter: only consider suppliers in the same region (or all if national)
+    sup_flt = await allowed_supplier_filter(user["sub"])
+    # supplier_products may be denormalized with region_normalized; fall back to filtering by supplier_id
+    if sup_flt:
+        # Get allowed supplier_ids and filter products by them (handles legacy products w/o region_normalized)
+        rows = await db.suppliers.find(sup_flt, {"_id": 0, "id": 1}).to_list(5000)
+        allowed_ids = [r["id"] for r in rows]
+        product_query = {"supplier_id": {"$in": allowed_ids}}
+    else:
+        product_query = {}
+    products = await db.supplier_products.find(product_query, {"_id": 0}).to_list(5000)
 
     # ---- Arabic-aware word-boundary matcher ----
     _DIACRITICS = re.compile(r'[\u064B-\u0652\u0670\u0640]')
@@ -839,7 +1008,25 @@ async def delete_supplier_product(product_id: str, user: dict = Depends(require_
 
 @api_router.get("/marketplace")
 async def marketplace(user: dict = Depends(get_current_user)):
-    docs = await db.supplier_products.find({}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    # Pharmacies see only same-region suppliers; suppliers see their own marketplace overview
+    flt: dict = {}
+    if user["role"] == "pharmacy":
+        sup_flt = await allowed_supplier_filter(user["sub"])
+        if sup_flt:
+            rows = await db.suppliers.find(sup_flt, {"_id": 0, "id": 1}).to_list(5000)
+            flt = {"supplier_id": {"$in": [r["id"] for r in rows]}}
+    docs = await db.supplier_products.find(flt, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    return docs
+
+
+@api_router.get("/suppliers")
+async def list_suppliers(user: dict = Depends(get_current_user)):
+    """Public suppliers directory. Pharmacies see only same-region suppliers."""
+    flt: dict = {}
+    if user["role"] == "pharmacy":
+        sup_flt = await allowed_supplier_filter(user["sub"])
+        flt.update(sup_flt or {})
+    docs = await db.suppliers.find(flt, {"_id": 0, "password": 0}).to_list(2000)
     return docs
 
 
@@ -1101,6 +1288,26 @@ async def seed_admin():
         logger.info(f"Seeded admin: phone={s['phone']}")
 
 
+@app.on_event("startup")
+async def ensure_indexes():
+    """Create indexes used by the marketplace and frequently-queried fields. Idempotent."""
+    try:
+        await db.pharmacies.create_index("phone", unique=False)
+        await db.pharmacies.create_index("region_normalized")
+        await db.suppliers.create_index("phone", unique=False)
+        await db.suppliers.create_index("region_normalized")
+        await db.supplier_products.create_index("supplier_id")
+        await db.supplier_products.create_index("region_normalized")
+        await db.supplier_sales.create_index("commit_id")
+        await db.supplier_sales.create_index("supplier_id")
+        await db.supplier_sales.create_index("status")
+        await db.audit_logs.create_index("action")
+        await db.audit_logs.create_index("timestamp")
+        logger.info("DB indexes ensured")
+    except Exception:
+        logger.exception("ensure_indexes failed (non-fatal)")
+
+
 # ---------- Audit log helper ----------
 async def audit(action: str, actor: dict | None = None, target: dict | None = None, meta: dict | None = None) -> None:
     try:
@@ -1181,7 +1388,10 @@ async def unified_login(data: LoginInput):
             "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
         return {
             "token": token, "role": "pharmacy",
-            "user": {"id": pharmacy["id"], "name": pharmacy["name"], "phone": pharmacy["phone"], "address": pharmacy["address"]},
+            "user": {"id": pharmacy["id"], "name": pharmacy["name"], "phone": pharmacy["phone"],
+                     "address": pharmacy.get("address"),
+                     "region": pharmacy.get("region"), "country": pharmacy.get("country")},
+            "must_set_region": not bool(pharmacy.get("region_normalized")),
         }
 
     supplier = await db.suppliers.find_one({"phone": data.phone}, {"_id": 0})
@@ -1194,7 +1404,10 @@ async def unified_login(data: LoginInput):
             "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
         return {
             "token": token, "role": "supplier",
-            "user": {"id": supplier["id"], "name": supplier["name"], "phone": supplier["phone"], "address": supplier["address"]},
+            "user": {"id": supplier["id"], "name": supplier["name"], "phone": supplier["phone"],
+                     "address": supplier.get("address"),
+                     "region": supplier.get("region"), "country": supplier.get("country")},
+            "must_set_region": not bool(supplier.get("region_normalized")),
         }
 
     await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login_failed",
@@ -1464,6 +1677,13 @@ async def commit_order(data: CommitOrderIn, user: dict = Depends(require_role("p
     if not pharmacy:
         raise HTTPException(status_code=404, detail="Pharmacy not found")
 
+    # Region enforcement: when marketplace_mode == 'local', reject groups whose supplier is in a different region
+    allowed_ids = await allowed_supplier_ids(user["sub"])
+    if allowed_ids is not None:  # local mode with pharmacy region set
+        bad = [g.supplier_id for g in data.groups if g.supplier_id not in set(allowed_ids)]
+        if bad:
+            raise HTTPException(status_code=403, detail="بعض المذاخر خارج منطقتك ولا يمكن الطلب منها")
+
     created_records = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for g in data.groups:
@@ -1669,6 +1889,7 @@ class PaymentSettingsUpdate(BaseModel):
     stripe_secret_key: Optional[str] = None
     stripe_enabled: Optional[bool] = None
     instructions: Optional[str] = None
+    marketplace_mode: Optional[str] = None  # "local" | "national"
 
 
 DEFAULT_PAYMENT_SETTINGS = {
@@ -1683,6 +1904,7 @@ DEFAULT_PAYMENT_SETTINGS = {
     "stripe_secret_key": None,
     "stripe_enabled": False,
     "instructions": None,
+    "marketplace_mode": "local",
     "updated_at": None,
     "updated_by": None,
 }
@@ -1712,6 +1934,8 @@ async def admin_update_payment_settings(data: PaymentSettingsUpdate,
     for k, v in raw.items():
         if v == "":
             updates[k] = None
+    if "marketplace_mode" in updates and updates["marketplace_mode"] not in ("local", "national"):
+        raise HTTPException(status_code=400, detail="marketplace_mode must be 'local' or 'national'")
     if not updates:
         raise HTTPException(status_code=400, detail="لا يوجد تحديث")
     # Validate Zain Cash QR base64 size

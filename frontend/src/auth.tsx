@@ -10,6 +10,8 @@ export type AuthUser = {
   address?: string;
   email?: string;
   must_change_password?: boolean;
+  region?: string | null;
+  country?: string | null;
 };
 
 type AuthState = {

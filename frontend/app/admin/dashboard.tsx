@@ -566,6 +566,7 @@ function PaymentSettingsTab({ token }: { token: string }) {
         stripe_secret_key: s.stripe_secret_key ?? '',
         stripe_enabled: !!s.stripe_enabled,
         instructions: s.instructions ?? '',
+        marketplace_mode: s.marketplace_mode || 'local',
       };
       const res: any = await apiFetch('/admin/payment-settings', {
         method: 'PATCH', body: JSON.stringify(body),
@@ -649,6 +650,35 @@ function PaymentSettingsTab({ token }: { token: string }) {
           <TextInput testID="pay-stripe-sk" style={[styles.input, { paddingLeft: 50 }]} value={s.stripe_secret_key || ''} onChangeText={(v) => setField('stripe_secret_key', v)} placeholder="sk_test_..." placeholderTextColor={colors.textMuted} secureTextEntry={!showSecret} textAlign="left" autoCapitalize="none" />
           <TouchableOpacity testID="pay-stripe-sk-toggle" style={{ position: 'absolute', left: 12, top: 12 }} onPress={() => setShowSecret(!showSecret)}>
             <Ionicons name={showSecret ? 'eye-off' : 'eye'} size={20} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Marketplace Mode */}
+      <View style={styles.payCard}>
+        <View style={styles.payHead}>
+          <Ionicons name="map" size={20} color="#0ea5e9" />
+          <Text style={styles.payTitle}>وضع السوق (Marketplace)</Text>
+        </View>
+        <Text style={styles.fieldLabel}>
+          {s.marketplace_mode === 'national'
+            ? '🌍 وطني: كل الصيدليات ترى كل المذاخر'
+            : '📍 محلي: كل صيدلية ترى مذاخر منطقتها فقط (افتراضي)'}
+        </Text>
+        <View style={{ flexDirection: 'row-reverse', gap: 8, marginTop: 6 }}>
+          <TouchableOpacity
+            testID="mp-mode-local"
+            style={[styles.modeBtn, (s.marketplace_mode || 'local') === 'local' && styles.modeBtnOn]}
+            onPress={() => setField('marketplace_mode', 'local')}
+          >
+            <Text style={[styles.modeBtnTxt, (s.marketplace_mode || 'local') === 'local' && { color: '#fff' }]}>محلي</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            testID="mp-mode-national"
+            style={[styles.modeBtn, s.marketplace_mode === 'national' && styles.modeBtnOn]}
+            onPress={() => setField('marketplace_mode', 'national')}
+          >
+            <Text style={[styles.modeBtnTxt, s.marketplace_mode === 'national' && { color: '#fff' }]}>وطني</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -904,4 +934,7 @@ const styles = StyleSheet.create({
   toggle: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 14, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
   toggleOn: { backgroundColor: '#635bff', borderColor: '#635bff' },
   toggleTxt: { fontSize: 12, fontWeight: '800', color: colors.textSecondary },
+  modeBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 10, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
+  modeBtnOn: { backgroundColor: '#0ea5e9', borderColor: '#0ea5e9' },
+  modeBtnTxt: { fontSize: 13, fontWeight: '800', color: colors.textSecondary },
 });
