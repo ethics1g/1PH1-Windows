@@ -185,7 +185,8 @@ def parse_excel_structured(file_b64: str) -> tuple[list[dict], dict]:
         # Need at least name + price for "structured_ok"
         fields = set(col_map.values())
         meta["sheet"] = sheet_name
-        meta["columns_detected"] = {idx: f for idx, f in col_map.items()}
+        # MongoDB requires string keys in documents, so stringify column indices
+        meta["columns_detected"] = {str(idx): f for idx, f in col_map.items()}
         meta["total_rows"] = max(0, len(rows) - header_row_idx - 1)
         if "name" not in fields or "price" not in fields:
             return [], meta

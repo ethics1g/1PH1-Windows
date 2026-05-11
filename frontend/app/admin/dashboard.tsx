@@ -44,6 +44,7 @@ export default function AdminDashboard() {
         {tab === 'orders' && <Orders token={token!} />}
         {tab === 'products' && <Products token={token!} />}
         {tab === 'commissions' && <Commissions token={token!} />}
+        {tab === 'payment' && <PaymentSettingsTab token={token!} />}
         {tab === 'notifications' && <Notifications token={token!} />}
         {tab === 'audit' && <AuditLogs token={token!} />}
       </View>
@@ -496,6 +497,181 @@ function ProofImage({ b64 }: { b64: string }) {
   return <Image source={{ uri: src }} style={{ width: '100%', height: '100%' }} resizeMode="contain" />;
 }
 
+// ----- Payment Settings -----
+function PaymentSettingsTab({ token }: { token: string }) {
+  const [s, setS] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [showSecret, setShowSecret] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const data: any = await apiFetch('/admin/payment-settings', {}, token);
+      setS(data);
+    } catch (e: any) { Alert.alert('خطأ', e.message); }
+    finally { setLoading(false); }
+  }, [token]);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const setField = (k: string, v: any) => setS((p: any) => ({ ...(p || {}), [k]: v }));
+
+  const pickQR = async () => {
+    try {
+      const DocumentPicker = await import('expo-document-picker');
+      const FileSystem: any = await import('expo-file-system/legacy');
+      const res = await DocumentPicker.getDocumentAsync({ type: ['image/*'], copyToCacheDirectory: true });
+      if (res.canceled || !res.assets?.length) return;
+      const a = res.assets[0];
+      let b64: string;
+      if (Platform.OS === 'web') {
+        const r = await fetch(a.uri);
+        const blob = await r.blob();
+        b64 = await new Promise<string>((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => { const x = String(fr.result || ''); resolve(x.includes(',') ? x.split(',')[1] : x); };
+          fr.onerror = reject;
+          fr.readAsDataURL(blob);
+        });
+      } else {
+        b64 = await FileSystem.readAsStringAsync(a.uri, { encoding: FileSystem.EncodingType.Base64 });
+      }
+      setField('zaincash_qr_b64', b64);
+      Alert.alert('تم', 'تم اختيار صورة QR. اضغط حفظ لتطبيق التغيير.');
+    } catch (e: any) {
+      Alert.alert('خطأ', e?.message || 'فشل اختيار الصورة');
+    }
+  };
+
+  const clearQR = () => setField('zaincash_qr_b64', '');
+
+  const save = async () => {
+    if (!s) return;
+    setBusy(true);
+    try {
+      const body: any = {
+        zaincash_phone: s.zaincash_phone ?? '',
+        zaincash_qr_b64: s.zaincash_qr_b64 ?? '',
+        whatsapp_admin_number: s.whatsapp_admin_number ?? '',
+        bank_name: s.bank_name ?? '',
+        bank_account_number: s.bank_account_number ?? '',
+        iban: s.iban ?? '',
+        stripe_public_key: s.stripe_public_key ?? '',
+        stripe_secret_key: s.stripe_secret_key ?? '',
+        stripe_enabled: !!s.stripe_enabled,
+        instructions: s.instructions ?? '',
+      };
+      const res: any = await apiFetch('/admin/payment-settings', {
+        method: 'PATCH', body: JSON.stringify(body),
+      }, token);
+      setS(res);
+      Alert.alert('تم الحفظ', 'تم تحديث إعدادات الدفع');
+    } catch (e: any) {
+      Alert.alert('خطأ', e.message || 'فشل الحفظ');
+    } finally { setBusy(false); }
+  };
+
+  if (loading) return <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>;
+  if (!s) return null;
+
+  return (
+    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30, gap: 14 }}>
+      {/* Zain Cash */}
+      <View style={styles.payCard}>
+        <View style={styles.payHead}>
+          <Ionicons name="wallet" size={20} color="#7c3aed" />
+          <Text style={styles.payTitle}>Zain Cash</Text>
+        </View>
+        <Text style={styles.fieldLabel}>رقم الهاتف</Text>
+        <TextInput testID="pay-zain-phone" style={styles.input} value={s.zaincash_phone || ''} onChangeText={(v) => setField('zaincash_phone', v)} placeholder="07XXXXXXXXX" placeholderTextColor={colors.textMuted} keyboardType="phone-pad" textAlign="right" />
+
+        <Text style={styles.fieldLabel}>صورة QR</Text>
+        {s.zaincash_qr_b64 ? (
+          <View style={styles.qrPreviewBox}>
+            <Image source={{ uri: `data:image/png;base64,${s.zaincash_qr_b64}` }} style={styles.qrPreview} resizeMode="contain" />
+            <TouchableOpacity testID="pay-zain-qr-clear" style={styles.qrClearBtn} onPress={clearQR}>
+              <Ionicons name="trash" size={14} color={colors.error} />
+              <Text style={{ color: colors.error, fontWeight: '700', fontSize: 12 }}>حذف</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity testID="pay-zain-qr-pick" style={styles.qrPickBtn} onPress={pickQR}>
+            <Ionicons name="cloud-upload-outline" size={22} color={colors.textSecondary} />
+            <Text style={{ color: colors.textSecondary, fontWeight: '700' }}>اختر صورة QR</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* WhatsApp */}
+      <View style={styles.payCard}>
+        <View style={styles.payHead}>
+          <Ionicons name="logo-whatsapp" size={20} color="#16a34a" />
+          <Text style={styles.payTitle}>WhatsApp الإدارة</Text>
+        </View>
+        <Text style={styles.fieldLabel}>رقم واتساب للدعم وتنسيق الدفع</Text>
+        <TextInput testID="pay-whatsapp" style={styles.input} value={s.whatsapp_admin_number || ''} onChangeText={(v) => setField('whatsapp_admin_number', v)} placeholder="9647XXXXXXXXX" placeholderTextColor={colors.textMuted} keyboardType="phone-pad" textAlign="right" />
+      </View>
+
+      {/* Bank */}
+      <View style={styles.payCard}>
+        <View style={styles.payHead}>
+          <Ionicons name="business" size={20} color="#0284c7" />
+          <Text style={styles.payTitle}>معلومات البنك (اختياري)</Text>
+        </View>
+        <Text style={styles.fieldLabel}>اسم البنك</Text>
+        <TextInput testID="pay-bank-name" style={styles.input} value={s.bank_name || ''} onChangeText={(v) => setField('bank_name', v)} placeholder="مثال: بنك بغداد" placeholderTextColor={colors.textMuted} textAlign="right" />
+        <Text style={styles.fieldLabel}>رقم الحساب</Text>
+        <TextInput testID="pay-bank-acct" style={styles.input} value={s.bank_account_number || ''} onChangeText={(v) => setField('bank_account_number', v)} placeholder="رقم الحساب" placeholderTextColor={colors.textMuted} textAlign="right" />
+        <Text style={styles.fieldLabel}>IBAN</Text>
+        <TextInput testID="pay-iban" style={styles.input} value={s.iban || ''} onChangeText={(v) => setField('iban', v)} placeholder="IQXX..." placeholderTextColor={colors.textMuted} textAlign="left" />
+      </View>
+
+      {/* Stripe */}
+      <View style={styles.payCard}>
+        <View style={styles.payHead}>
+          <Ionicons name="card" size={20} color="#635bff" />
+          <Text style={styles.payTitle}>Stripe (مستقبلاً)</Text>
+          <View style={{ flex: 1 }} />
+          <TouchableOpacity testID="pay-stripe-toggle" style={[styles.toggle, s.stripe_enabled && styles.toggleOn]} onPress={() => setField('stripe_enabled', !s.stripe_enabled)}>
+            <Text style={[styles.toggleTxt, s.stripe_enabled && { color: '#fff' }]}>{s.stripe_enabled ? 'مفعل' : 'معطل'}</Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.fieldLabel}>Public Key</Text>
+        <TextInput testID="pay-stripe-pk" style={styles.input} value={s.stripe_public_key || ''} onChangeText={(v) => setField('stripe_public_key', v)} placeholder="pk_test_..." placeholderTextColor={colors.textMuted} textAlign="left" autoCapitalize="none" />
+        <Text style={styles.fieldLabel}>Secret Key</Text>
+        <View style={{ position: 'relative' }}>
+          <TextInput testID="pay-stripe-sk" style={[styles.input, { paddingLeft: 50 }]} value={s.stripe_secret_key || ''} onChangeText={(v) => setField('stripe_secret_key', v)} placeholder="sk_test_..." placeholderTextColor={colors.textMuted} secureTextEntry={!showSecret} textAlign="left" autoCapitalize="none" />
+          <TouchableOpacity testID="pay-stripe-sk-toggle" style={{ position: 'absolute', left: 12, top: 12 }} onPress={() => setShowSecret(!showSecret)}>
+            <Ionicons name={showSecret ? 'eye-off' : 'eye'} size={20} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Instructions */}
+      <View style={styles.payCard}>
+        <View style={styles.payHead}>
+          <Ionicons name="information-circle" size={20} color={colors.textSecondary} />
+          <Text style={styles.payTitle}>ملاحظات للموردين</Text>
+        </View>
+        <TextInput testID="pay-instructions" style={[styles.input, { height: 80 }]} value={s.instructions || ''} onChangeText={(v) => setField('instructions', v)} placeholder="مثال: حول العمولة عبر Zain Cash ثم أرفع إثبات الدفع..." placeholderTextColor={colors.textMuted} multiline textAlign="right" />
+      </View>
+
+      <TouchableOpacity testID="pay-save" style={[styles.composeBtn, { marginHorizontal: 0 }]} onPress={save} disabled={busy}>
+        {busy ? <ActivityIndicator color="#fff" /> : (
+          <>
+            <Ionicons name="save" size={20} color="#fff" />
+            <Text style={styles.composeTxt}>حفظ الإعدادات</Text>
+          </>
+        )}
+      </TouchableOpacity>
+
+      {s.updated_at && (
+        <Text style={{ textAlign: 'center', color: colors.textMuted, fontSize: 11 }}>آخر تحديث: {new Date(s.updated_at).toLocaleString('ar')}</Text>
+      )}
+    </ScrollView>
+  );
+}
+
 // ----- Notifications -----
 function Notifications({ token }: { token: string }) {
   const [list, setList] = useState<any[]>([]);
@@ -709,4 +885,16 @@ const styles = StyleSheet.create({
   commRow: { flexDirection: 'row-reverse', justifyContent: 'space-between', flexWrap: 'wrap', gap: 4 },
   commVal: { fontWeight: '800', color: colors.textPrimary },
   commActions: { flexDirection: 'row-reverse', gap: 8, flexWrap: 'wrap' },
+  // Payment Settings
+  payCard: { backgroundColor: colors.surface, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: colors.border, gap: 6 },
+  payHead: { flexDirection: 'row-reverse', alignItems: 'center', gap: 8, marginBottom: 6 },
+  payTitle: { fontSize: 15, fontWeight: '800', color: colors.textPrimary },
+  fieldLabel: { fontSize: 12, color: colors.textSecondary, textAlign: 'right', marginTop: 4 },
+  qrPreviewBox: { alignItems: 'center', gap: 8, padding: 10, backgroundColor: colors.background, borderRadius: 12 },
+  qrPreview: { width: 180, height: 180 },
+  qrClearBtn: { flexDirection: 'row-reverse', gap: 4, alignItems: 'center', backgroundColor: '#fee2e2', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
+  qrPickBtn: { flexDirection: 'row-reverse', gap: 8, alignItems: 'center', justifyContent: 'center', padding: 22, backgroundColor: colors.background, borderRadius: 12, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border },
+  toggle: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 14, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
+  toggleOn: { backgroundColor: '#635bff', borderColor: '#635bff' },
+  toggleTxt: { fontSize: 12, fontWeight: '800', color: colors.textSecondary },
 });

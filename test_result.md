@@ -213,13 +213,52 @@ backend:
             Verdict: pagination feature WORKING for all 8 endpoints. The merged-list quirk on
             /admin/users and /admin/products is a known UX limitation (not a crash, no data loss).
 
+  - task: "Payment Settings (admin CRUD + public payment-info)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            FULL backend test executed via /app/backend_test.py against public URL
+            (https://pharma-checkout-8.preview.emergentagent.com/api). 40/40 payment-settings
+            assertions PASSED.
+              1. GET /api/admin/payment-settings (admin: 0000000000/admin123) → 200, all 13
+                 expected fields present (zaincash_phone, zaincash_qr_b64, whatsapp_admin_number,
+                 bank_name, bank_account_number, iban, stripe_public_key, stripe_secret_key,
+                 stripe_enabled[bool], instructions, updated_at, updated_by, id="payment").
+              2. PATCH full payload → 200, all 8 fields stored correctly, updated_at + updated_by
+                 populated.
+              3. PATCH partial { zaincash_phone:"07999999999" } → only that field changed;
+                 bank_name, stripe_public_key, etc. preserved.
+              4. PATCH clear iban with "" → iban becomes null; other fields preserved.
+              5. PATCH small 1×1 PNG zaincash_qr_b64 → stored exactly as sent.
+              6. PATCH zaincash_qr_b64 with 5MB+ payload → 413 "حجم صورة QR كبير جداً (الحد 3MB)".
+              7. GET /api/payment-info (supplier 07811111111/sup1) → 200, returns all 10 public
+                 fields. CRITICAL: stripe_secret_key is NOT in the response. Values match what
+                 admin saved in step 2-4 (zaincash_phone=07999999999, whatsapp=9647901234567,
+                 bank_name=بنك بغداد, iban=null, stripe_public_key=pk_test_DEMO123,
+                 stripe_enabled=false, zaincash_qr_b64 round-trips exactly).
+              8. Role enforcement: pharmacy & supplier hitting GET /admin/payment-settings → 403;
+                 pharmacy & supplier PATCH → 403; unauthenticated GET /payment-info → 401.
+              9. GET /api/admin/audit-logs?action=payment_settings_updated → 200, entries present,
+                 latest entry has actor.role=="admin" and meta.fields contains the patched field
+                 names.
+            Environment note: supplier 07811111111 was found disabled again (admin had toggled
+            it in earlier UI testing). Re-enabled via PATCH /api/admin/users/supplier/{id}
+            {"disabled": false} during test setup. Not a code issue.
+
   - task: "Excel catalog import (hybrid: structured + AI fallback)"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/catalog_import.py, /app/backend/server.py"
     stuck_count: 1
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: "NA"
           agent: "main"
@@ -235,6 +274,30 @@ backend:
             "excel_ai_fallback" | "image_ai" | "pdf_ai") and extraction_meta.
             Quick local sanity check: build_excel_template -> 5.2KB; round-trip parse -> 3 items detected;
             unknown headers -> structured_ok=False (falls back); Arabic-Indic digits parsed.
+        - working: false
+          agent: "testing"
+          comment: |
+            BSON int-key bug in columns_detected — see prior history. Fix suggested.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ RE-TEST PASSED after the str(idx) fix in /app/backend/catalog_import.py line 189.
+            All 16 excel sub-assertions passed (via /app/backend_test.py):
+              1. GET /api/supplier/catalog/template → 200, size 5253 bytes, "PK" zip signature.
+              2. POST /api/supplier/catalog/upload (template, file_type=xlsx) → 200, job_id returned.
+              3. Polled job for 15s → status=="review", extraction_method=="excel_structured",
+                 total_items==3, extraction_meta.columns_detected has STRING keys (verified all
+                 keys are str, e.g. {"0":"name","1":"price","2":"quantity",...}).
+              4. Built mixed-quality xlsx (1 valid row, 1 row with price="abc", 1 row with empty name).
+                 Upload → status=="review", method=="excel_structured", total_items==1.
+                 "BadPrice Tab" NOT in items list; empty-name row NOT in items list. Only the
+                 valid row "Amoxil 500" (price 2500, qty 30) made it through.
+            Minor observation (NOT a bug): rejected_invalid stayed 0 for the mixed upload because
+            parse_excel_structured drops invalid rows BEFORE returning items, so the downstream
+            rejected_invalid counter in process_import_job never sees them. The user-visible
+            behavior is correct (invalid rows excluded, total_items accurate). If main agent wants
+            rejected_invalid to surface the count, parse_excel_structured could return it in meta.
+            Status: excel_structured path is fully working end-to-end.
         - working: false
           agent: "testing"
           comment: |
@@ -493,3 +556,29 @@ agent_communication:
             updating /app/memory/test_credentials.md with the active password (or resetting via
             POST /api/admin/change-password).
         No code changes were required. Backend Supplier Commission System is fully working.
+    - agent: "testing"
+      message: |
+        ✅ PAYMENT SETTINGS (NEW) — ALL 40/40 ASSERTIONS PASSED.
+        ✅ EXCEL STRUCTURED PARSE FIX — ALL 16/16 ASSERTIONS PASSED (re-test after str(idx) fix).
+        Total: 56 PASS / 0 FAIL via /app/backend_test.py against public URL.
+
+        Highlights:
+        - GET/PATCH /api/admin/payment-settings: full payload, partial update, clear-via-empty,
+          QR base64 upload, 5MB+ payload rejected with 413.
+        - GET /api/payment-info (any auth user): all public fields present, stripe_secret_key
+          confirmed NOT leaked, values match latest admin save (zaincash_phone=07999999999,
+          stripe_public_key=pk_test_DEMO123, stripe_enabled=false, qr round-trips exactly).
+        - Role enforcement perfect: pharmacy & supplier → 403 on /admin/payment-settings;
+          unauthenticated → 401 on /payment-info.
+        - Audit log entry created (action=payment_settings_updated) with actor.role=admin
+          and meta.fields listing the patched fields.
+        - Excel template download (5253 bytes, "PK" signature) + structured upload pipeline
+          now finalizes correctly: status=review, method=excel_structured, total_items=3,
+          extraction_meta.columns_detected keys are STRING (verified post-fix).
+        - Mixed-quality xlsx (1 valid, 1 bad price, 1 empty name): total_items=1, invalid rows
+          excluded from items list. Minor note: rejected_invalid stayed 0 because
+          parse_excel_structured drops bad rows pre-dedup; user-visible behavior is correct,
+          counter just doesn't surface them. Not blocking.
+        Environment note: supplier 07811111111 was disabled again — re-enabled via
+        PATCH /api/admin/users/supplier/{id} during test setup. Suggest leaving suppliers
+        enabled by default after admin UI testing.

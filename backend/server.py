@@ -1654,6 +1654,111 @@ async def admin_confirm_commission(record_id: str, user: dict = Depends(require_
     return {"status": "ok"}
 
 
+# ============== Payment Settings ==============
+PAYMENT_SETTINGS_ID = "payment"
+
+
+class PaymentSettingsUpdate(BaseModel):
+    zaincash_phone: Optional[str] = None
+    zaincash_qr_b64: Optional[str] = None
+    whatsapp_admin_number: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    iban: Optional[str] = None
+    stripe_public_key: Optional[str] = None
+    stripe_secret_key: Optional[str] = None
+    stripe_enabled: Optional[bool] = None
+    instructions: Optional[str] = None
+
+
+DEFAULT_PAYMENT_SETTINGS = {
+    "id": PAYMENT_SETTINGS_ID,
+    "zaincash_phone": None,
+    "zaincash_qr_b64": None,
+    "whatsapp_admin_number": None,
+    "bank_name": None,
+    "bank_account_number": None,
+    "iban": None,
+    "stripe_public_key": None,
+    "stripe_secret_key": None,
+    "stripe_enabled": False,
+    "instructions": None,
+    "updated_at": None,
+    "updated_by": None,
+}
+
+
+async def _get_or_init_payment_settings() -> dict:
+    doc = await db.app_settings.find_one({"id": PAYMENT_SETTINGS_ID}, {"_id": 0})
+    if not doc:
+        doc = DEFAULT_PAYMENT_SETTINGS.copy()
+        await db.app_settings.insert_one(doc.copy())
+        doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/admin/payment-settings")
+async def admin_get_payment_settings(user: dict = Depends(require_role("admin"))):
+    """Full settings including stripe_secret_key. Admin only."""
+    return await _get_or_init_payment_settings()
+
+
+@api_router.patch("/admin/payment-settings")
+async def admin_update_payment_settings(data: PaymentSettingsUpdate,
+                                        user: dict = Depends(require_role("admin"))):
+    updates = {k: v for k, v in data.dict(exclude_unset=True).items() if v is not None or k in ("stripe_enabled",)}
+    # Allow explicit nullification: client must send empty string ("") to clear a field
+    raw = data.dict(exclude_unset=True)
+    for k, v in raw.items():
+        if v == "":
+            updates[k] = None
+    if not updates:
+        raise HTTPException(status_code=400, detail="لا يوجد تحديث")
+    # Validate Zain Cash QR base64 size
+    qr = updates.get("zaincash_qr_b64")
+    if qr and len(qr) > 4 * 1024 * 1024:  # ~3MB after b64 decode
+        raise HTTPException(status_code=413, detail="حجم صورة QR كبير جداً (الحد 3MB)")
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    updates["updated_by"] = user["sub"]
+    await db.app_settings.update_one(
+        {"id": PAYMENT_SETTINGS_ID},
+        {"$set": updates, "$setOnInsert": {"id": PAYMENT_SETTINGS_ID}},
+        upsert=True,
+    )
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()), "action": "payment_settings_updated",
+        "actor": {"id": user["sub"], "role": "admin"},
+        "target": {"id": PAYMENT_SETTINGS_ID},
+        "meta": {"fields": list(updates.keys())},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    return await _get_or_init_payment_settings()
+
+
+@api_router.get("/payment-info")
+async def get_public_payment_info(user: dict = Depends(get_current_user)):
+    """
+    Public-safe payment info for any authenticated user.
+    Hides stripe_secret_key. Returns the QR image (base64) so suppliers can scan & pay.
+    """
+    s = await _get_or_init_payment_settings()
+    return {
+        "zaincash_phone": s.get("zaincash_phone"),
+        "zaincash_qr_b64": s.get("zaincash_qr_b64"),
+        "whatsapp_admin_number": s.get("whatsapp_admin_number"),
+        "bank_name": s.get("bank_name"),
+        "bank_account_number": s.get("bank_account_number"),
+        "iban": s.get("iban"),
+        "stripe_public_key": s.get("stripe_public_key"),
+        "stripe_enabled": bool(s.get("stripe_enabled")),
+        "instructions": s.get("instructions"),
+        "updated_at": s.get("updated_at"),
+    }
+
+
+# ============== End Payment Settings ==============
+
+
 # ============== End Admin ==============
 
 # Re-register router to pick up admin routes added after initial include
