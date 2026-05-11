@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "صيدلية كاشير",
+    "name": "1PH1",
     "slug": "frontend",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -17,7 +17,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#22c55e"
+        "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
       "permissions": ["android.permission.CAMERA"]
@@ -39,9 +39,9 @@
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
+          "imageWidth": 220,
           "resizeMode": "contain",
-          "backgroundColor": "#22c55e"
+          "backgroundColor": "#ffffff"
         }
       ],
       "expo-web-browser"
