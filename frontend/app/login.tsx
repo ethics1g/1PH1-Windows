@@ -88,7 +88,6 @@ export default function Login() {
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.logoWrap}>
             <Image source={require('../assets/branding/logo.png')} style={styles.logoImg} resizeMode="contain" />
-            <Text style={styles.title}>1PH1</Text>
             <Text style={styles.subtitle}>نظام ذكي للصيدليات والمذاخر</Text>
           </View>
 
@@ -248,13 +247,7 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
   scroll: { padding: 24, paddingBottom: 48 },
   logoWrap: { alignItems: 'center', marginTop: 8, marginBottom: 20 },
-  logoImg: { width: 140, height: 140 },
-  logoCircle: {
-    width: 88, height: 88, borderRadius: 44, backgroundColor: colors.primary,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: colors.primary, shadowOpacity: 0.3, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 8,
-  },
-  title: { fontSize: 32, fontWeight: '900', color: colors.textPrimary, marginTop: 8, letterSpacing: 1 },
+  logoImg: { width: 180, height: 180 },
   subtitle: { fontSize: 13, color: colors.textSecondary, marginTop: 4 },
   roleSwitch: { flexDirection: 'row-reverse', backgroundColor: colors.surface, borderRadius: 16, padding: 4, marginBottom: 16, borderWidth: 1, borderColor: colors.border },
   roleBtn: { flex: 1, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, borderRadius: 12, gap: 6 },
