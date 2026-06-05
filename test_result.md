@@ -818,11 +818,11 @@ test_plan:
 backend_new:
   - task: "Pharmacy Savings Feature (cumulative_savings credit on completion + GET /api/pharmacy/savings)"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: "NA"
           agent: "main"
@@ -854,11 +854,11 @@ backend_new:
 frontend_new:
   - task: "Optimize screen Savings UI (banner + per-supplier %)"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/frontend/app/optimize.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: "NA"
           agent: "main"
