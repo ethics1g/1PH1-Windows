@@ -21,6 +21,7 @@ const tiles: Tile[] = [
   { key: 'buy', title: 'الشراء', subtitle: 'إضافة الأدوية للمخزن', icon: 'cube', bg: '#e0f2fe', iconColor: '#0284c7', route: '/buy', testID: 'tile-buy' },
   { key: 'inventory', title: 'المخزن', subtitle: 'عرض وإدارة المخزون', icon: 'file-tray-stacked', bg: '#fef3c7', iconColor: '#d97706', route: '/inventory', testID: 'tile-inventory' },
   { key: 'suppliers', title: 'المذاخر', subtitle: 'متجر الموردين', icon: 'storefront', bg: '#eef2ff', iconColor: '#6366f1', route: '/suppliers', testID: 'tile-suppliers' },
+  { key: 'orders', title: 'طلبياتي', subtitle: 'تتبع الطلبيات وتأكيد الاستلام', icon: 'receipt', bg: '#fce7f3', iconColor: '#be185d', route: '/pharmacy-orders', testID: 'tile-orders' },
 ];
 
 export default function Home() {

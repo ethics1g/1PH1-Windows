@@ -100,6 +100,20 @@ export default function SupplierDashboard() {
           </TouchableOpacity>
 
           <TouchableOpacity
+            testID="btn-supplier-orders"
+            style={styles.ordersCard}
+            activeOpacity={0.85}
+            onPress={() => router.push({ pathname: '/supplier-orders' } as any)}
+          >
+            <View style={styles.commissionIcon}><Ionicons name="receipt" size={26} color="#fff" /></View>
+            <View style={{ flex: 1, alignItems: 'flex-end' }}>
+              <Text style={styles.aiTitle}>طلبياتي</Text>
+              <Text style={styles.aiSub}>قبول/رفض الطلبيات + متابعة التجهيز والتسليم</Text>
+            </View>
+            <Ionicons name="chevron-back" size={22} color="#fff" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
             testID="btn-commissions"
             style={styles.commissionCard}
             activeOpacity={0.85}
@@ -186,5 +200,6 @@ const styles = StyleSheet.create({
   aiTitle: { color: '#fff', fontWeight: '900', fontSize: 15, textAlign: 'right' },
   aiSub: { color: 'rgba(255,255,255,0.85)', fontSize: 11, textAlign: 'right', marginTop: 2 },
   commissionCard: { backgroundColor: '#10b981', borderRadius: 18, padding: 14, flexDirection: 'row-reverse', alignItems: 'center', gap: 10, shadowColor: '#10b981', shadowOpacity: 0.25, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
+  ordersCard: { backgroundColor: '#0ea5e9', borderRadius: 18, padding: 14, flexDirection: 'row-reverse', alignItems: 'center', gap: 10, shadowColor: '#0ea5e9', shadowOpacity: 0.25, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
   commissionIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
 });

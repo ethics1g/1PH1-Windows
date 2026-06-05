@@ -73,10 +73,10 @@ export default function Optimize() {
     if (!groups || groups.length === 0) return;
     Alert.alert(
       'تثبيت الطلبية',
-      `سيتم إنشاء سجل عمولة (4%) لكل مذخر. لا يمكن التراجع. هل أنت متأكد؟`,
+      `سيتم إرسال طلبية لكل مذخر (${groups.length}). المذاخر ستحتاج لقبول الطلبية أولاً، ثم تجهيزها وتوصيلها. تأكد من الاستلام لتفعيل احتساب العمولة (4%) عند إكمال الطلبية. هل تريد المتابعة؟`,
       [
         { text: 'إلغاء', style: 'cancel' },
-        { text: 'تثبيت', style: 'default', onPress: async () => {
+        { text: 'تأكيد الطلب', style: 'default', onPress: async () => {
           setCommitting(true);
           try {
             // Generate idempotent commit_id
@@ -94,10 +94,10 @@ export default function Optimize() {
             };
             const res: any = await apiFetch('/orders/optimize/commit', { method: 'POST', body: JSON.stringify(payload) }, token);
             setCommitted(true);
-            const totalCommission = groups.reduce((s, g) => s + g.total * 0.04, 0);
             Alert.alert(
-              '✅ تم التثبيت',
-              `تم إنشاء ${res.created} سجل\nإجمالي العمولة: ${fmt(totalCommission)} د.ع\n\nيمكنك الآن إرسال الطلبية للمذاخر.`,
+              '✅ تم إرسال الطلب',
+              `تم إنشاء ${res.created} طلبية. سيتم إشعار المذاخر للقبول.`,
+              [{ text: 'عرض طلبياتي', onPress: () => router.replace('/pharmacy-orders' as any) }],
             );
           } catch (e: any) {
             Alert.alert('خطأ', e.message || 'فشل التثبيت');
