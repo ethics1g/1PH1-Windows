@@ -567,17 +567,77 @@ backend:
                 "marketplace_mode": s.get("marketplace_mode") or "local",
 
   - task: "Expiry Date in Buy + Expiry Alerts"
-    implemented: false
-    working: false
+    implemented: true
+    working: true
     file: "/app/backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ RE-TEST AFTER IMPLEMENTATION — ALL 34/34 ASSERTIONS PASSED via
+            /app/backend_test_expiry.py against the public URL
+            (https://pharma-checkout-8.preview.emergentagent.com/api).
+
+            Verified endpoints:
+              - POST /api/medicines/buy now reads, validates, normalizes, stores expiry_date.
+              - GET /api/medicines/expiry-alerts now exists and works as specified.
+
+            Detailed PASS/FAIL per test plan A–F:
+            A. Buy with valid expiry_date YYYY-MM-DD → stored ✅
+               Tested 6 fresh buys (FAR=180d, D30=30d, D7=5d, EXPIRED=-3d, BEYOND=200d, QTY0=0qty).
+               All returned 200, expiry_date present in response AND in /medicines list.
+            B. Buy with YYYY-MM → normalized to YYYY-MM-01 ✅
+               Input "2028-03" → stored as "2028-03-01" (verified via response body).
+            C. Buy with "garbage" → 400 with "تاريخ انتهاء غير صالح" ✅
+               Status 400, detail starts with "تاريخ انتهاء غير صالح (الصيغة: YYYY-MM-DD)".
+               No medicine created (find_medicine returned None).
+            D. Buy without expiry_date → 200 (back compat) ✅
+               Response expiry_date is None.
+            E. Duplicate buy with earlier expiry → stored (earlier wins); later → keeps existing ✅
+               Initial: 5 units @ 1000, exp=+100d → stored.
+               Dup with EARLIER (+20d): quantity becomes 8, expiry_date replaced to earlier.
+               Dup with LATER (+300d): quantity becomes 10, expiry_date kept as +20d (earlier).
+            F. GET /api/medicines/expiry-alerts ✅
+               Returns {today, groups{expired,critical_7,warning_30,soon_90}, counts, total_alerts}.
+               Items have status + days_left populated.
+               - EXPIRED (-3d) → in "expired" group, days_left=-3 ✓
+               - D7 (5d) → in "critical_7" group ✓
+               - D30 (30d) → in "warning_30" group ✓
+               - FAR (180d) → NOT in any alert group (>90d horizon) ✓
+               - BEYOND (200d) → NOT in any alert group ✓
+               - QTY0 (qty=0, 25d expiry) → NOT in alerts (quantity filter works) ✓
+               - sum(counts) == total_alerts ✓
+            G. Supplier hits /medicines/expiry-alerts → 403 (NOT 405) ✅
+            H. Unauthenticated → 401 ✅
+
+            Implementation verified in /app/backend/server.py:
+              - _parse_expiry helper (line ~692): handles YYYY-MM-DD, YYYY-MM normalization,
+                raises HTTPException(400, "تاريخ انتهاء غير صالح ...") on invalid input.
+              - _expiry_status helper (line ~712): buckets by days_left into
+                expired/critical_7/warning_30/soon_90/ok/no_expiry.
+              - GET /medicines/expiry-alerts (line 732): filters pharmacy_id, quantity>0,
+                expiry_date<=today+90d via string compare; returns groups + counts + total.
+              - POST /medicines/buy (line 761): parses+validates expiry up front, passes
+                expiry_iso into Medicine() on new insert; on dup merge does
+                min(existing.expiry_date, new) via lexicographic ISO compare (earlier wins).
+
+            Routing note: GET /medicines/expiry-alerts is registered AFTER
+            PATCH/DELETE /medicines/{medicine_id}; FastAPI/Starlette correctly resolves the
+            FULL match over the PARTIAL match (path matches but method differs), so 405 is
+            no longer returned. The earlier run's 405 was because the new routes had not
+            yet been deployed.
+
+            No regressions: all other /medicines flows (list, sell, barcode, role
+            enforcement) continue to work. Test driver: /app/backend_test_expiry.py.
+
         - working: false
           agent: "testing"
           comment: |
-            🐛 FEATURE NOT IMPLEMENTED IN BACKEND.
+            🐛 FEATURE NOT IMPLEMENTED IN BACKEND (PREVIOUS RUN — superseded by the
+            successful retest above).
 
             Tested via /app/backend_test.py against
             https://pharma-checkout-8.preview.emergentagent.com/api.
@@ -749,8 +809,7 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Expiry Date in Buy + Expiry Alerts"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -1001,3 +1060,32 @@ agent_communication:
         Environment note: supplier 07811111111 was disabled again — re-enabled via
         PATCH /api/admin/users/supplier/{id} during test setup. Suggest leaving suppliers
         enabled by default after admin UI testing.
+
+    - agent: "testing"
+      message: |
+        ✅ EXPIRY DATE IN BUY + EXPIRY ALERTS — RE-TEST PASSED.
+        Total: 34/34 PASS via /app/backend_test_expiry.py against public URL
+        (https://pharma-checkout-8.preview.emergentagent.com/api).
+
+        Spec items verified:
+          1. Buy with valid YYYY-MM-DD → stored ✅ (6 fresh meds: FAR/D30/D7/EXPIRED/BEYOND/QTY0)
+          2. Buy with YYYY-MM → normalized to YYYY-MM-01 ✅ ("2028-03" → "2028-03-01")
+          3. Buy with "garbage" → 400 with "تاريخ انتهاء غير صالح" ✅
+          4. Buy without expiry_date → 200 (back compat) ✅
+          5. Duplicate buy: earlier-wins logic ✅
+             - dup with EARLIER exp → expiry replaced + quantities summed
+             - dup with LATER exp → existing (earlier) expiry preserved + quantities summed
+          6. GET /api/medicines/expiry-alerts ✅
+             - Returns {today, groups{expired, critical_7, warning_30, soon_90}, counts, total_alerts}
+             - Items carry status + days_left
+             - >90 day items excluded; qty=0 items excluded; sum(counts) == total_alerts
+          7. Supplier hits endpoint → 403 (not 405) ✅
+          8. Unauthenticated → 401 ✅
+
+        Routing note: GET /medicines/expiry-alerts is defined AFTER PATCH/DELETE
+        /medicines/{medicine_id}, but FastAPI/Starlette resolves the FULL method+path match
+        ahead of the parameterized partial match, so no collision. The earlier 405 was
+        because backend hadn't picked up the new routes yet — confirmed fixed after restart.
+
+        No backend code changes were made by me. Backend is production-ready for this feature.
+        Test driver: /app/backend_test_expiry.py.

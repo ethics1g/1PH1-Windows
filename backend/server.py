@@ -689,8 +689,78 @@ async def sell_medicines(data: SellRequest, user: dict = Depends(require_role("p
     return {"total": total, "sale_id": sale_doc["id"], "items": sold_items}
 
 
+def _parse_expiry(v: Optional[str]) -> Optional[str]:
+    """Validate and normalize an expiry date string to 'YYYY-MM-DD'. Accepts 'YYYY-MM' too."""
+    if not v:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    if len(s) == 7 and s[4] == "-":
+        try:
+            datetime.strptime(s + "-01", "%Y-%m-%d")
+            return s + "-01"
+        except Exception:
+            raise HTTPException(status_code=400, detail="تاريخ انتهاء غير صالح")
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return s
+    except Exception:
+        raise HTTPException(status_code=400, detail="تاريخ انتهاء غير صالح (الصيغة: YYYY-MM-DD)")
+
+
+def _expiry_status(expiry_date: Optional[str]) -> dict:
+    if not expiry_date:
+        return {"status": "no_expiry", "days_left": None}
+    try:
+        d = datetime.strptime(expiry_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except Exception:
+        return {"status": "no_expiry", "days_left": None}
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    days_left = (d - today).days
+    if days_left < 0:
+        return {"status": "expired", "days_left": days_left}
+    if days_left <= 7:
+        return {"status": "critical_7", "days_left": days_left}
+    if days_left <= 30:
+        return {"status": "warning_30", "days_left": days_left}
+    if days_left <= 90:
+        return {"status": "soon_90", "days_left": days_left}
+    return {"status": "ok", "days_left": days_left}
+
+
+@api_router.get("/medicines/expiry-alerts")
+async def medicines_expiry_alerts(user: dict = Depends(require_role("pharmacy"))):
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    horizon_90 = (today + timedelta(days=90)).strftime("%Y-%m-%d")
+    today_str = today.strftime("%Y-%m-%d")
+    cursor = db.medicines.find(
+        {
+            "pharmacy_id": user["sub"],
+            "expiry_date": {"$ne": None, "$exists": True, "$lte": horizon_90},
+            "quantity": {"$gt": 0},
+        },
+        {"_id": 0, "image_base64": 0},
+    )
+    items = await cursor.to_list(5000)
+    groups: dict[str, list[dict]] = {"expired": [], "critical_7": [], "warning_30": [], "soon_90": []}
+    for it in items:
+        st = _expiry_status(it.get("expiry_date"))
+        it["status"] = st["status"]
+        it["days_left"] = st["days_left"]
+        if st["status"] in groups:
+            groups[st["status"]].append(it)
+    return {
+        "today": today_str,
+        "groups": groups,
+        "counts": {k: len(v) for k, v in groups.items()},
+        "total_alerts": sum(len(v) for v in groups.values()),
+    }
+
+
 @api_router.post("/medicines/buy")
 async def buy_medicine(data: BuyRequest, user: dict = Depends(require_role("pharmacy"))):
+    expiry_iso = _parse_expiry(data.expiry_date)
     # Find existing by barcode or name to increment quantity
     query = {"pharmacy_id": user["sub"]}
     if data.barcode:
@@ -703,6 +773,9 @@ async def buy_medicine(data: BuyRequest, user: dict = Depends(require_role("phar
         updates = {"quantity": new_qty, "price": data.price}
         if data.image_base64:
             updates["image_base64"] = data.image_base64
+        if expiry_iso:
+            prev = existing.get("expiry_date")
+            updates["expiry_date"] = expiry_iso if (not prev or expiry_iso < prev) else prev
         await db.medicines.update_one({"id": existing["id"]}, {"$set": updates})
         existing.update(updates)
         return existing
@@ -714,6 +787,7 @@ async def buy_medicine(data: BuyRequest, user: dict = Depends(require_role("phar
         quantity=data.quantity,
         price=data.price,
         image_base64=data.image_base64,
+        expiry_date=expiry_iso,
     )
     doc = med.dict()
     doc["created_at"] = doc["created_at"].isoformat()
