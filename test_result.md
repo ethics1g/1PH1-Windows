@@ -443,6 +443,114 @@ backend:
 
             Test driver: /app/backend_test_region.py. Restored marketplace_mode=local at end.
 
+  - task: "Order Lifecycle Workflow (pending → completed + commission on completion + 72h auto)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ ALL 75/75 backend assertions PASSED via /app/backend_test.py against the public URL
+            (https://pharma-checkout-8.preview.emergentagent.com/api). Order lifecycle workflow is
+            fully working end-to-end. Major refactor verified: commission is now created ONLY on
+            completion (not on commit).
+
+            === Per-section results (all PASS) ===
+            TEST 1 — Commit creates orders, NOT commissions ✅
+              - POST /orders/optimize → smart_split returns 2 supplier groups.
+              - POST /orders/optimize/commit returns {status:"ok", created:2, orders:[...2 ids]}.
+              - db.supplier_sales count for sup1 and sup2 UNCHANGED before vs after commit.
+              - db.orders has 2 new docs with status="pending", commit_id=<uuid>,
+                rejection_reason=null, commission_amount=null, commission_id=null,
+                auto_completed=false, accepted_at/processing_at/delivered_at/completed_at=null.
+
+            TEST 2 — Idempotency ✅
+              - Re-POST same commit_id → {status:"already_committed", created:0}.
+              - db.orders.count_documents({commit_id:X}) == 2 (no duplicate orders).
+
+            TEST 3 — Anti-circumvention (redaction of pharmacy info when pending) ✅
+              - GET /api/supplier/orders?status=pending: pharmacy_name=null, pharmacy_phone=null,
+                pharmacy_address=null. pharmacy_region remains VISIBLE (logistics decision).
+              - After PATCH /supplier/orders/{id}/accept → re-fetch shows full pharmacy info
+                populated (name="صيدلية اختبار LC", phone=07780665242, address="بغداد - الكرادة").
+
+            TEST 4 — Happy path state transitions ✅
+              - accepted → processing → delivered → completed (pharmacy confirm-receipt) all 200.
+              - Final response includes order_status="completed", commission_amount=200.0,
+                commission_id=<uuid>. db.orders shows status=completed,
+                commission_amount = total * 0.04 (5000 * 0.04 = 200), commission_id present.
+              - +1 supplier_sales record created with rate=0.04, status="pending"
+                (payment status), order_id matches.
+              - GET /api/supplier/commissions reflects the new record.
+
+            TEST 5 — Bad transitions (all return 400) ✅
+              - pending → /delivered → 400 "لا يمكن وضع علامة تم التسليم. الحالة: pending"
+              - accepted → /confirm-receipt → 400 "لا يمكن التأكيد. الحالة: accepted"
+              - completed → /accept, /delivered, /confirm-receipt → 400 each.
+
+            TEST 6 — Role enforcement ✅
+              - Pharmacy token hitting /supplier/orders/{id}/accept → 403 "Forbidden"
+                (role decorator).
+              - Different supplier hitting other supplier's order /accept → 403 "ليست طلبيتك"
+                (ownership check).
+              - Supplier token on /pharmacy/orders/{id}/confirm-receipt → 403 (role decorator).
+
+            TEST 7 — Reject flow ✅
+              - PATCH /supplier/orders/{id}/reject {reason:"نفاد المخزون"} → 200.
+              - db.orders.status=rejected, rejection_reason="نفاد المخزون" persisted.
+              - NO commission record created (supplier_sales unchanged).
+
+            TEST 8 — Stats endpoint ✅
+              - GET /api/supplier/orders/stats returns {by_status, completed_count,
+                completed_total, commission_due_total, rate}.
+              - rate == 0.04. commission_due_total == completed_total * 0.04 (5000 → 200).
+              - by_status is a dict keyed by status with {count, total} per bucket.
+
+            TEST 9 — Auto-complete after 72h (simulated via mongo backdate) ✅
+              - Created fresh order, walked it to delivered, then directly updated
+                delivered_at to 80h ago via pymongo.
+              - Calling GET /api/supplier/orders triggered auto-complete:
+                status → completed, auto_completed=true, commission_amount=80.0 (2000*0.04),
+                and a new supplier_sales record was inserted with source="order_completed_auto".
+
+            TEST 10 — Commission post-completion flow still works ✅
+              - Supplier POST /supplier/commissions/{id}/upload-proof → 200, status → submitted.
+              - Admin PATCH /admin/commissions/{id}/confirm → 200, status → paid.
+
+            TEST 11 — Region enforcement on commit still works ✅
+              - With marketplace_mode=local, P_BG (region=بغداد) committing a group for
+                supplier-البصرة → 403 "بعض المذاخر خارج منطقتك ولا يمكن الطلب منها".
+
+            === Implementation notes (for reference) ===
+            - /app/backend/server.py:
+                * COMMISSION_RATE = 0.04 (line 1645)
+                * commit_order (line 1666): creates orders only; idempotent via
+                  count_documents({"commit_id": ...}) check.
+                * _create_completion_commission (line 1745): writes supplier_sales doc with
+                  source="order_completed" or "order_completed_auto", frozen=true.
+                * _complete_order (line 1781): defensive — only transitions if status=="delivered".
+                * _maybe_auto_complete_delivered (line 1804): scans for delivered>72h on
+                  /pharmacy/orders and /supplier/orders requests.
+                * _redact_pharmacy_info (line 1733): nulls out pharmacy_name/phone/address when
+                  status=="pending"; preserves pharmacy_region.
+                * Lifecycle endpoints (1821–1917): /accept, /reject, /processing, /delivered,
+                  /confirm-receipt — each enforces ownership + valid prior state + writes
+                  audit_logs entry.
+                * /supplier/orders/stats (line 1950): mongo aggregate by status, computes
+                  commission_due_total from completed bucket.
+            - Test fixture note for future re-runs:
+                The Arabic-aware optimize matcher in /orders/optimize uses token-overlap (>=3 chars).
+                When constructing test product names, avoid sharing a token >=3 chars between
+                different products — otherwise both queries match both products and smart_split
+                collapses to a single group. The test now uses distinct, non-overlapping names.
+            Trace data left behind: test pharmacy "صيدلية اختبار LC", suppliers "مذخر بغداد LC",
+            "مذخر بغداد LC2", "مذخر البصرة LC" with fresh phone numbers per run; ~6 orders/sales
+            rows per run. Not impacting other test paths.
+
   - task: "/api/payment-info includes marketplace_mode"
     implemented: false
     working: false
@@ -661,6 +769,38 @@ agent_communication:
             updating /app/memory/test_credentials.md with the active password (or resetting via
             POST /api/admin/change-password).
         No code changes were required. Backend Supplier Commission System is fully working.
+    - agent: "testing"
+      message: |
+        ✅ ORDER LIFECYCLE WORKFLOW — 75/75 backend assertions PASS via /app/backend_test.py.
+
+        All 11 test sections of the review request pass against the public URL:
+          1. Commit creates orders (status=pending, in db.orders), NOT commissions in db.supplier_sales.
+          2. Idempotency: same commit_id → already_committed, created=0, no duplicate orders.
+          3. Anti-circumvention: pharmacy_name/phone/address are NULL when status=pending;
+             pharmacy_region remains visible; full info exposed after accept.
+          4. Happy path: pending→accept→processing→delivered→confirm-receipt = completed.
+             commission_amount = total*0.04, commission_id set, +1 supplier_sales row with rate=0.04
+             and status=pending (for payment).
+          5. Bad transitions return 400 (pending→delivered, accepted→confirm-receipt, completed→any).
+          6. Role enforcement: pharmacy on /supplier/accept → 403; cross-supplier on someone else's
+             order → 403 "ليست طلبيتك"; supplier on /pharmacy/confirm-receipt → 403.
+          7. Reject: status=rejected, rejection_reason persisted, NO commission created.
+          8. Stats: by_status map + completed_total + commission_due_total = completed_total*0.04
+             + rate=0.04.
+          9. Auto-complete after 72h (simulated by backdating delivered_at via pymongo):
+             GET /supplier/orders triggers auto-complete → status=completed, auto_completed=true,
+             commission_amount=total*0.04, +1 supplier_sales row with source="order_completed_auto".
+         10. Post-completion commission flow: upload-proof (status→submitted) and admin confirm
+             (status→paid) continue to work end-to-end.
+         11. Region enforcement on commit: P_BG committing for supplier in البصرة → 403.
+
+        Test fixture detail to note (NOT a backend bug): the Arabic-aware /orders/optimize matcher
+        uses token-overlap (>=3 chars) to match query→product. When all test products in a single
+        request shared a 6-char RUN suffix, both queries matched both products and smart_split
+        collapsed to one group. After switching to distinct, non-overlapping product names the
+        optimize call returned 2 groups as expected. Recorded in the test driver for future runs.
+
+        No backend code changes were made. Backend is production-ready for this workflow.
     - agent: "testing"
       message: |
         ✅ REGION-BASED MARKETPLACE FILTERING — 49/52 backend assertions PASS via

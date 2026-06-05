@@ -1665,11 +1665,16 @@ class CommitOrderIn(BaseModel):
 
 @api_router.post("/orders/optimize/commit")
 async def commit_order(data: CommitOrderIn, user: dict = Depends(require_role("pharmacy"))):
-    """Pharmacy locks a plan -> create one supplier_sales record per group (4% commission)."""
+    """
+    Pharmacy locks a plan -> create one ORDER per supplier group with status='pending'.
+    NO commission is created at this stage. Commission is only created when the order
+    reaches 'completed' (manual confirm-receipt OR auto 72h after delivered).
+    Idempotent via commit_id.
+    """
     if not data.commit_id or not data.groups:
         raise HTTPException(status_code=400, detail="بيانات ناقصة")
-    # Idempotency: skip if already committed
-    existing = await db.supplier_sales.count_documents({"commit_id": data.commit_id})
+    # Idempotency: skip if any order with this commit_id already exists
+    existing = await db.orders.count_documents({"commit_id": data.commit_id})
     if existing > 0:
         return {"status": "already_committed", "commit_id": data.commit_id, "created": 0}
 
@@ -1684,35 +1689,283 @@ async def commit_order(data: CommitOrderIn, user: dict = Depends(require_role("p
         if bad:
             raise HTTPException(status_code=403, detail="بعض المذاخر خارج منطقتك ولا يمكن الطلب منها")
 
-    created_records = []
+    created = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for g in data.groups:
         if g.total <= 0:
             continue
-        commission = round(g.total * COMMISSION_RATE, 2)
-        rec = {
+        order = {
             "id": str(uuid.uuid4()),
             "commit_id": data.commit_id,
-            "supplier_id": g.supplier_id,
-            "supplier_name": g.supplier_name,
             "pharmacy_id": user["sub"],
             "pharmacy_name": pharmacy.get("name"),
-            "order_total": float(g.total),
-            "commission": commission,
-            "rate": COMMISSION_RATE,
+            "pharmacy_phone": pharmacy.get("phone"),
+            "pharmacy_address": pharmacy.get("address"),
+            "pharmacy_region": pharmacy.get("region"),
+            "pharmacy_country": pharmacy.get("country"),
+            "supplier_id": g.supplier_id,
+            "supplier_name": g.supplier_name,
             "items": [it.dict() for it in g.items],
+            "total": float(g.total),
             "status": "pending",
-            "payment_proof_b64": None,
-            "paid_at": None,
             "source": "optimize",
-            "frozen": True,
+            "rejection_reason": None,
+            "commission_amount": None,
+            "commission_rate": COMMISSION_RATE,
+            "commission_id": None,
+            "auto_completed": False,
             "created_at": now_iso,
+            "accepted_at": None,
+            "processing_at": None,
+            "delivered_at": None,
+            "completed_at": None,
+            "rejected_at": None,
         }
-        await db.supplier_sales.insert_one(rec.copy())
-        rec.pop("_id", None)
-        created_records.append({"id": rec["id"], "supplier_name": rec["supplier_name"], "commission": rec["commission"]})
+        await db.orders.insert_one(order.copy())
+        created.append({"id": order["id"], "supplier_name": g.supplier_name, "total": order["total"]})
+    return {"status": "ok", "commit_id": data.commit_id, "created": len(created), "orders": created}
 
-    return {"status": "ok", "commit_id": data.commit_id, "created": len(created_records), "records": created_records}
+
+# ---------- Order lifecycle endpoints ----------
+AUTO_COMPLETE_HOURS = 72
+
+
+def _redact_pharmacy_info(order: dict) -> dict:
+    """Hide pharmacy contact details if the order is still in pending state (anti-circumvention)."""
+    if (order.get("status") or "pending") == "pending":
+        o = dict(order)
+        o["pharmacy_name"] = None
+        o["pharmacy_phone"] = None
+        o["pharmacy_address"] = None
+        # Keep region/country (for logistics decision before accept)
+        return o
+    return order
+
+
+async def _create_completion_commission(order: dict, actor: dict, auto: bool = False) -> dict:
+    """Create a supplier_sales record on completion. Returns the new record."""
+    total = float(order.get("total") or 0)
+    commission = round(total * COMMISSION_RATE, 2)
+    rec = {
+        "id": str(uuid.uuid4()),
+        "commit_id": order.get("commit_id"),
+        "order_id": order.get("id"),
+        "supplier_id": order.get("supplier_id"),
+        "supplier_name": order.get("supplier_name"),
+        "pharmacy_id": order.get("pharmacy_id"),
+        "pharmacy_name": order.get("pharmacy_name"),
+        "order_total": total,
+        "commission": commission,
+        "rate": COMMISSION_RATE,
+        "items": order.get("items") or [],
+        "status": "pending",  # commission payment status (pending -> submitted -> paid)
+        "payment_proof_b64": None,
+        "paid_at": None,
+        "source": "order_completed_auto" if auto else "order_completed",
+        "frozen": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.supplier_sales.insert_one(rec.copy())
+    rec.pop("_id", None)
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "commission_generated_on_completion",
+        "actor": {"id": actor.get("id"), "role": actor.get("role")},
+        "target": {"order_id": order.get("id"), "supplier_id": order.get("supplier_id"),
+                   "amount": commission, "auto": auto},
+        "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    return rec
+
+
+async def _complete_order(order: dict, actor: dict, auto: bool = False) -> dict:
+    """Transition an order to 'completed' and generate the commission. Idempotent."""
+    if order.get("status") == "completed":
+        return order
+    if order.get("status") != "delivered":
+        # Defensive: should not be called for orders not in delivered state
+        return order
+    now_iso = datetime.now(timezone.utc).isoformat()
+    commission_rec = await _create_completion_commission(order, actor, auto=auto)
+    await db.orders.update_one(
+        {"id": order["id"]},
+        {"$set": {
+            "status": "completed",
+            "completed_at": now_iso,
+            "auto_completed": bool(auto),
+            "commission_amount": commission_rec["commission"],
+            "commission_id": commission_rec["id"],
+        }},
+    )
+    updated = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
+    return updated or order
+
+
+async def _maybe_auto_complete_delivered(filter_q: dict, actor: dict) -> int:
+    """Auto-complete orders that have been 'delivered' for > AUTO_COMPLETE_HOURS hours."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=AUTO_COMPLETE_HOURS)).isoformat()
+    q = {**filter_q, "status": "delivered", "delivered_at": {"$lt": cutoff}}
+    cursor = db.orders.find(q, {"_id": 0})
+    count = 0
+    async for o in cursor:
+        await _complete_order(o, actor, auto=True)
+        count += 1
+    return count
+
+
+class RejectIn(BaseModel):
+    reason: Optional[str] = None
+
+
+@api_router.patch("/supplier/orders/{order_id}/accept")
+async def supplier_accept_order(order_id: str, user: dict = Depends(require_role("supplier"))):
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="الطلبية غير موجودة")
+    if order.get("supplier_id") != user["sub"]:
+        raise HTTPException(status_code=403, detail="ليست طلبيتك")
+    if order.get("status") != "pending":
+        raise HTTPException(status_code=400, detail=f"لا يمكن القبول. الحالة الحالية: {order.get('status')}")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.orders.update_one({"id": order_id}, {"$set": {"status": "accepted", "accepted_at": now_iso}})
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()), "action": "order_accepted",
+        "actor": {"id": user["sub"], "role": "supplier"},
+        "target": {"order_id": order_id}, "meta": {},
+        "timestamp": now_iso,
+    })
+    return {"status": "ok", "order_status": "accepted"}
+
+
+@api_router.patch("/supplier/orders/{order_id}/reject")
+async def supplier_reject_order(order_id: str, data: RejectIn, user: dict = Depends(require_role("supplier"))):
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="الطلبية غير موجودة")
+    if order.get("supplier_id") != user["sub"]:
+        raise HTTPException(status_code=403, detail="ليست طلبيتك")
+    if order.get("status") not in ("pending", "accepted"):
+        raise HTTPException(status_code=400, detail=f"لا يمكن الرفض. الحالة: {order.get('status')}")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.orders.update_one({"id": order_id}, {"$set": {
+        "status": "rejected",
+        "rejected_at": now_iso,
+        "rejection_reason": (data.reason or "").strip() or None,
+    }})
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()), "action": "order_rejected",
+        "actor": {"id": user["sub"], "role": "supplier"},
+        "target": {"order_id": order_id}, "meta": {"reason": data.reason},
+        "timestamp": now_iso,
+    })
+    return {"status": "ok", "order_status": "rejected"}
+
+
+@api_router.patch("/supplier/orders/{order_id}/processing")
+async def supplier_processing_order(order_id: str, user: dict = Depends(require_role("supplier"))):
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="الطلبية غير موجودة")
+    if order.get("supplier_id") != user["sub"]:
+        raise HTTPException(status_code=403, detail="ليست طلبيتك")
+    if order.get("status") != "accepted":
+        raise HTTPException(status_code=400, detail=f"يجب القبول أولاً. الحالة: {order.get('status')}")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.orders.update_one({"id": order_id}, {"$set": {"status": "processing", "processing_at": now_iso}})
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()), "action": "order_processing",
+        "actor": {"id": user["sub"], "role": "supplier"},
+        "target": {"order_id": order_id}, "meta": {},
+        "timestamp": now_iso,
+    })
+    return {"status": "ok", "order_status": "processing"}
+
+
+@api_router.patch("/supplier/orders/{order_id}/delivered")
+async def supplier_delivered_order(order_id: str, user: dict = Depends(require_role("supplier"))):
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="الطلبية غير موجودة")
+    if order.get("supplier_id") != user["sub"]:
+        raise HTTPException(status_code=403, detail="ليست طلبيتك")
+    if order.get("status") not in ("accepted", "processing"):
+        raise HTTPException(status_code=400, detail=f"لا يمكن وضع علامة تم التسليم. الحالة: {order.get('status')}")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.orders.update_one({"id": order_id}, {"$set": {"status": "delivered", "delivered_at": now_iso}})
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()), "action": "order_delivered",
+        "actor": {"id": user["sub"], "role": "supplier"},
+        "target": {"order_id": order_id}, "meta": {},
+        "timestamp": now_iso,
+    })
+    return {"status": "ok", "order_status": "delivered"}
+
+
+@api_router.patch("/pharmacy/orders/{order_id}/confirm-receipt")
+async def pharmacy_confirm_receipt(order_id: str, user: dict = Depends(require_role("pharmacy"))):
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="الطلبية غير موجودة")
+    if order.get("pharmacy_id") != user["sub"]:
+        raise HTTPException(status_code=403, detail="ليست طلبيتك")
+    if order.get("status") != "delivered":
+        raise HTTPException(status_code=400, detail=f"لا يمكن التأكيد. الحالة: {order.get('status')}")
+    updated = await _complete_order(order, {"id": user["sub"], "role": "pharmacy"}, auto=False)
+    return {"status": "ok", "order_status": "completed",
+            "commission_amount": updated.get("commission_amount"),
+            "commission_id": updated.get("commission_id")}
+
+
+# Pharmacy: view own orders (already exists at /orders; we replace with richer version)
+@api_router.get("/pharmacy/orders")
+async def pharmacy_orders(status: Optional[str] = None, skip: int = 0, limit: int = 100,
+                          user: dict = Depends(require_role("pharmacy"))):
+    s, lim = _paginate(skip, limit, default=100, hard_max=500)
+    # Trigger lazy auto-complete for THIS pharmacy's delivered orders >72h
+    await _maybe_auto_complete_delivered({"pharmacy_id": user["sub"]},
+                                         {"id": "system", "role": "system"})
+    q: dict = {"pharmacy_id": user["sub"]}
+    if status:
+        q["status"] = status
+    docs = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).skip(s).limit(lim).to_list(lim)
+    return docs
+
+
+@api_router.get("/supplier/orders")
+async def supplier_orders(status: Optional[str] = None, skip: int = 0, limit: int = 100,
+                         user: dict = Depends(require_role("supplier"))):
+    s, lim = _paginate(skip, limit, default=100, hard_max=500)
+    # Trigger lazy auto-complete
+    await _maybe_auto_complete_delivered({"supplier_id": user["sub"]},
+                                         {"id": "system", "role": "system"})
+    q: dict = {"supplier_id": user["sub"]}
+    if status:
+        q["status"] = status
+    docs = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).skip(s).limit(lim).to_list(lim)
+    # Redact pharmacy info for pending orders
+    return [_redact_pharmacy_info(d) for d in docs]
+
+
+@api_router.get("/supplier/orders/stats")
+async def supplier_order_stats(user: dict = Depends(require_role("supplier"))):
+    """Aggregate counts and totals by status. Used in supplier dashboard."""
+    pipeline = [
+        {"$match": {"supplier_id": user["sub"]}},
+        {"$group": {"_id": "$status", "count": {"$sum": 1}, "total": {"$sum": "$total"}}},
+    ]
+    rows = await db.orders.aggregate(pipeline).to_list(50)
+    stats = {row["_id"]: {"count": row["count"], "total": round(row["total"] or 0, 2)} for row in rows}
+    completed = stats.get("completed", {"count": 0, "total": 0})
+    completed_total = completed["total"]
+    commission_due = round(completed_total * COMMISSION_RATE, 2)
+    return {
+        "by_status": stats,
+        "completed_count": completed["count"],
+        "completed_total": completed_total,
+        "commission_due_total": commission_due,
+        "rate": COMMISSION_RATE,
+    }
 
 
 def _monthly_summary(records: list[dict]) -> list[dict]:
