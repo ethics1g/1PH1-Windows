@@ -10,11 +10,13 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.pharmacy.ph1",
       "infoPlist": {
         "NSCameraUsageDescription": "مسح الباركود والتعرف على الأدوية"
       }
     },
     "android": {
+      "package": "com.pharmacy.ph1",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
