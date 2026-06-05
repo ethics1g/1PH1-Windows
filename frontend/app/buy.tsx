@@ -17,11 +17,12 @@ export default function Buy() {
   const [barcode, setBarcode] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [price, setPrice] = useState('');
+  const [expiryDate, setExpiryDate] = useState(''); // YYYY-MM-DD
   const [image, setImage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const reset = () => {
-    setName(''); setBarcode(''); setQuantity('1'); setPrice(''); setImage(null);
+    setName(''); setBarcode(''); setQuantity('1'); setPrice(''); setExpiryDate(''); setImage(null);
   };
 
   const handleBarcode = async (bc: string) => {
@@ -60,6 +61,17 @@ export default function Buy() {
       Alert.alert('تنبيه', 'اسم الدواء، الكمية، والسعر مطلوبة');
       return;
     }
+    if (!expiryDate.trim()) {
+      Alert.alert('تنبيه', 'تاريخ انتهاء الصلاحية مطلوب');
+      return;
+    }
+    // Validate date format YYYY-MM-DD or YYYY-MM
+    const fullRe = /^\d{4}-\d{2}-\d{2}$/;
+    const monthRe = /^\d{4}-\d{2}$/;
+    if (!fullRe.test(expiryDate.trim()) && !monthRe.test(expiryDate.trim())) {
+      Alert.alert('تنبيه', 'صيغة التاريخ يجب أن تكون YYYY-MM-DD (مثل 2027-12-31)');
+      return;
+    }
     setBusy(true);
     try {
       await apiFetch('/medicines/buy', {
@@ -69,6 +81,7 @@ export default function Buy() {
           barcode: barcode.trim() || null,
           quantity: parseInt(quantity) || 0,
           price: parseFloat(price) || 0,
+          expiry_date: expiryDate.trim(),
           image_base64: image,
         }),
       }, token);
@@ -106,6 +119,22 @@ export default function Buy() {
             <View style={{ flex: 1 }}>
               <Field label="السعر (د.ع)" value={price} onChange={setPrice} testID="buy-price" keyboardType="numeric" />
             </View>
+          </View>
+
+          <View style={styles.field}>
+            <Text style={styles.label}>تاريخ انتهاء الصلاحية * (YYYY-MM-DD)</Text>
+            <TextInput
+              testID="buy-expiry"
+              style={styles.input}
+              value={expiryDate}
+              onChangeText={setExpiryDate}
+              placeholder="مثال: 2027-12-31"
+              placeholderTextColor={colors.textMuted}
+              keyboardType="numbers-and-punctuation"
+              textAlign="right"
+              maxLength={10}
+            />
+            <Text style={styles.hint}>تنبيهات تلقائية: 90 يوم · 30 يوم · 7 أيام · منتهي</Text>
           </View>
 
           <TouchableOpacity
@@ -155,6 +184,7 @@ const styles = StyleSheet.create({
   scanBtnTxt: { color: '#fff', fontSize: 16, fontWeight: '800' },
   field: { marginBottom: 14 },
   label: { fontSize: 13, color: colors.textSecondary, marginBottom: 6, textAlign: 'right', fontWeight: '700' },
+  hint: { fontSize: 11, color: colors.textMuted, marginTop: 6, textAlign: 'right' },
   input: { backgroundColor: colors.surface, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: colors.textPrimary, borderWidth: 1, borderColor: colors.border },
   row: { flexDirection: 'row-reverse', gap: 12 },
   save: { backgroundColor: colors.primary, borderRadius: 16, paddingVertical: 16, flexDirection: 'row-reverse', gap: 8, alignItems: 'center', justifyContent: 'center', marginTop: 8 },

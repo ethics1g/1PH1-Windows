@@ -177,6 +177,7 @@ class Medicine(BaseModel):
     quantity: int = 0
     price: float = 0.0
     image_base64: Optional[str] = None
+    expiry_date: Optional[str] = None  # ISO date "YYYY-MM-DD"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -186,6 +187,7 @@ class MedicineCreate(BaseModel):
     quantity: int = 0
     price: float = 0.0
     image_base64: Optional[str] = None
+    expiry_date: Optional[str] = None
 
 
 class MedicineUpdate(BaseModel):
@@ -193,6 +195,7 @@ class MedicineUpdate(BaseModel):
     barcode: Optional[str] = None
     quantity: Optional[int] = None
     price: Optional[float] = None
+    expiry_date: Optional[str] = None
 
 
 class SellItem(BaseModel):
@@ -210,6 +213,7 @@ class BuyRequest(BaseModel):
     quantity: int
     price: float
     image_base64: Optional[str] = None
+    expiry_date: Optional[str] = None  # ISO date "YYYY-MM-DD" (required by frontend)
 
 
 class IdentifyImage(BaseModel):

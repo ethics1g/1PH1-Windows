@@ -566,6 +566,105 @@ backend:
             One-line fix in get_public_payment_info() at /app/backend/server.py ~line 1962:
                 "marketplace_mode": s.get("marketplace_mode") or "local",
 
+  - task: "Expiry Date in Buy + Expiry Alerts"
+    implemented: false
+    working: false
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: false
+          agent: "testing"
+          comment: |
+            🐛 FEATURE NOT IMPLEMENTED IN BACKEND.
+
+            Tested via /app/backend_test.py against
+            https://pharma-checkout-8.preview.emergentagent.com/api.
+            Total: 48 PASS / 15 FAIL. The failures are concentrated on every assertion
+            that depends on the new expiry logic.
+
+            === What IS in code ===
+            Only the Pydantic model fields exist:
+              - Medicine, MedicineCreate, MedicineUpdate, BuyRequest each have
+                `expiry_date: Optional[str] = None`  (server.py lines 180, 190, 198, 216).
+            No other expiry logic has been added.
+
+            === What is MISSING in code ===
+            1. buy_medicine() at /app/backend/server.py lines 692–721:
+               - Does NOT read `data.expiry_date` when CREATING a new Medicine
+                 (the `Medicine(...)` constructor call has NO `expiry_date=` argument,
+                 so newly bought items are stored with expiry_date=None even when the
+                 client sent one).
+               - Does NOT validate format. "garbage" returned 200 (should be 400 with
+                 "تاريخ انتهاء غير صالح").
+               - Does NOT normalize "YYYY-MM" to "YYYY-MM-01".
+               - Does NOT merge on duplicates (earlier-wins). On dup, existing.update()
+                 only takes {quantity, price, image_base64}; expiry_date is ignored
+                 entirely.
+            2. GET /api/medicines/expiry-alerts endpoint does NOT exist.
+               Returns 405 (URL collides with /medicines/{id}). Spec required this new
+               endpoint with groups {expired, critical_7, warning_30, soon_90}, counts,
+               total_alerts, today, and per-item status + days_left.
+
+            === Concrete test failures (15) ===
+            A. Buy creates medicine with expiry (all 6 sub-cases fail to store expiry_date):
+              - ExpTest_FAR/30D/7D/EXPIRED/90D/OK all returned status 200 but
+                expiry_date is null in /medicines listing.
+            B. Validation:
+              - "garbage" expiry_date → 200 (expected 400 with "غير صالح").
+              - "2027-12" stored as null (expected "2027-12-01").
+            C. Merge on duplicate:
+              - On dup, expiry_date stays null instead of being set to the earlier
+                of existing/new. Quantity-sum and price-overwrite parts of the merge
+                DO work correctly.
+            D. /medicines/expiry-alerts:
+              - Endpoint returns 405 Method Not Allowed (route does not exist).
+              - Subsequent assertion "some medicines carry expiry_date field" also
+                fails because nothing got stored in step A.
+            E. Role enforcement on /medicines/expiry-alerts:
+              - Supplier and unauth both get 405 (endpoint missing) instead of 403/401.
+
+            === What still works (no regression) ===
+            - POST /auth/login (pharmacy + supplier) returns full payload.
+            - POST /medicines/buy without expiry_date → 200 (back compat OK).
+            - Duplicate-buy quantity sum (5→8→10) and price overwrite (→1100) work.
+            - GET /medicines listing works (skip/limit honored).
+            - POST /orders/optimize returns expected structure.
+            - POST /medicines/buy by supplier → 403; unauth → 401.
+
+            === Suggested implementation outline (for main agent) ===
+            1. Add helper:
+                 def parse_and_validate_expiry(v: Optional[str]) -> Optional[str]:
+                   if not v: return None
+                   v = v.strip()
+                   try:
+                     if len(v) == 7:  # YYYY-MM
+                       d = datetime.strptime(v, "%Y-%m")
+                       return d.strftime("%Y-%m-01")
+                     d = datetime.strptime(v, "%Y-%m-%d")
+                     return d.strftime("%Y-%m-%d")
+                   except Exception:
+                     raise HTTPException(400, "تاريخ انتهاء غير صالح")
+            2. In buy_medicine():
+                 - Call parser at top.
+                 - When existing: compute new_expiry = min(existing.get("expiry_date"),
+                   parsed) treating None as "no constraint" (i.e. keep the one that
+                   exists if the other is None; if both exist, keep the earlier ISO
+                   string — ISO YYYY-MM-DD compares lexicographically).
+                 - When new: pass expiry_date=parsed into Medicine(...).
+            3. Add @api_router.get("/medicines/expiry-alerts") with require_role("pharmacy"):
+                 - today_utc = datetime.now(timezone.utc).date()
+                 - SELECT medicines where pharmacy_id == me, quantity > 0,
+                   expiry_date != null, expiry_date <= today+90d (string compare on
+                   YYYY-MM-DD works).
+                 - For each item: days_left = (parse(expiry_date) - today).days
+                   bucket: <0 expired, 0..7 critical_7, 8..30 warning_30,
+                           31..90 soon_90.
+                 - Return {today, groups: {...}, counts: {...}, total_alerts: int}.
+
+            Tests stored at /app/backend_test.py and will be reused after fix.
+
 frontend:
   - task: "Supplier Commission UI: commit on optimize, view on supplier-dashboard, admin tab"
     implemented: true
@@ -651,7 +750,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Region-based marketplace filtering"
+    - "Expiry Date in Buy + Expiry Alerts"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -779,6 +878,46 @@ agent_communication:
           3. Anti-circumvention: pharmacy_name/phone/address are NULL when status=pending;
              pharmacy_region remains visible; full info exposed after accept.
           4. Happy path: pending→accept→processing→delivered→confirm-receipt = completed.
+    - agent: "testing"
+      message: |
+        🐛 EXPIRY DATE FEATURE — FEATURE NOT IMPLEMENTED IN BACKEND.
+
+        Ran /app/backend_test.py against public URL. 48/63 PASS, 15 FAIL.
+        All 15 failures are the new expiry logic; the model fields (Medicine,
+        MedicineCreate, MedicineUpdate, BuyRequest) DO have `expiry_date: Optional[str]`
+        declared, but no endpoint actually reads, validates, stores, or merges
+        expiry_date, and the new alerts endpoint is missing entirely.
+
+        Concrete gaps in /app/backend/server.py:
+          1. buy_medicine() (lines 692–721):
+             - Medicine(...) is constructed WITHOUT `expiry_date=data.expiry_date`
+               → new medicines always store None.
+             - No validation; "garbage" returns 200 instead of 400 "تاريخ انتهاء غير صالح".
+             - No "YYYY-MM" → "YYYY-MM-01" normalization.
+             - Dup merge updates {quantity, price, image_base64} but never touches
+               expiry_date — earlier-wins logic absent.
+          2. GET /api/medicines/expiry-alerts endpoint not implemented (returns 405,
+             URL is being interpreted as /medicines/{id}). Spec requires:
+                groups: {expired, critical_7, warning_30, soon_90}
+                counts, total_alerts, today
+                items: {..., status, days_left}, quantity > 0, only those expiring
+                within 90 days or already expired.
+
+        What still passes (no regression):
+          - /auth/login full payload OK.
+          - /medicines/buy with no expiry_date → 200 (back compat).
+          - Dup merge quantity-sum (5→8→10) and price-overwrite (→1100) work.
+          - /medicines list, /orders/optimize structure intact.
+          - Role enforcement on /medicines/buy: supplier 403, unauth 401.
+
+        Suggested implementation outline is in the task's status_history. The test
+        driver /app/backend_test.py covers every section of the spec (A–F) and can
+        be re-run after the fix.
+
+        ACTION FOR MAIN AGENT: implement the buy_medicine expiry_date handling
+        (validate/normalize/store on create + earlier-wins merge on dup) AND add
+        GET /api/medicines/expiry-alerts.
+
              commission_amount = total*0.04, commission_id set, +1 supplier_sales row with rate=0.04
              and status=pending (for payment).
           5. Bad transitions return 400 (pending→delivered, accepted→confirm-receipt, completed→any).

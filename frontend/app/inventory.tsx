@@ -127,6 +127,18 @@ export default function Inventory() {
                     <Text style={[styles.qtyBadge, low ? styles.qtyLow : styles.qtyOk]}>رصيد: {item.quantity}</Text>
                     <Text style={styles.rowPrice}>{item.price.toLocaleString()} د.ع</Text>
                   </View>
+                  {item.expiry_date ? (() => {
+                    const today = new Date(); today.setHours(0, 0, 0, 0);
+                    const exp = new Date(item.expiry_date + 'T00:00:00Z');
+                    const daysLeft = Math.floor((exp.getTime() - today.getTime()) / 86400000);
+                    let label = '', bg = '', color = '';
+                    if (daysLeft < 0) { label = `منتهي (${Math.abs(daysLeft)} يوم)`; bg = '#fee2e2'; color = '#991b1b'; }
+                    else if (daysLeft <= 7) { label = `ينتهي خلال ${daysLeft} يوم`; bg = '#fee2e2'; color = '#991b1b'; }
+                    else if (daysLeft <= 30) { label = `ينتهي خلال ${daysLeft} يوم`; bg = '#fef3c7'; color = '#92400e'; }
+                    else if (daysLeft <= 90) { label = `ينتهي خلال ${daysLeft} يوم`; bg = '#dbeafe'; color = '#1e40af'; }
+                    else return null;
+                    return <Text style={[styles.expBadge, { backgroundColor: bg, color }]}>⏱ {label}</Text>;
+                  })() : null}
                 </View>
               </TouchableOpacity>
             );
@@ -187,6 +199,7 @@ const styles = StyleSheet.create({
   rowName: { fontSize: 16, fontWeight: '800', color: colors.textPrimary, textAlign: 'right' },
   rowMeta: { flexDirection: 'row-reverse', gap: 8, marginTop: 4, alignItems: 'center' },
   qtyBadge: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 8, fontSize: 12, fontWeight: '700', overflow: 'hidden' },
+  expBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, fontSize: 11, fontWeight: '700', overflow: 'hidden', marginTop: 4, alignSelf: 'flex-end' },
   qtyOk: { backgroundColor: colors.primaryLight, color: colors.primaryDark },
   qtyLow: { backgroundColor: '#fee2e2', color: colors.error },
   rowPrice: { color: colors.secondaryDark, fontWeight: '800', fontSize: 13 },

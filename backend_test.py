@@ -1,454 +1,338 @@
 """
-Order Lifecycle Workflow backend tests.
+Backend tests for the new EXPIRY DATE feature on the pharmacy module.
 
-Tests pending -> accepted -> processing -> delivered -> completed workflow,
-commission generation ONLY on completion, anti-circumvention redaction,
-72h auto-complete, role enforcement, region enforcement, and idempotency.
+Spec: /app/test_result.md  task "Expiry Date in Buy + Expiry Alerts".
+
+Targets:
+  - POST /api/medicines/buy now accepts expiry_date and validates it.
+  - On duplicate medicine, earlier expiry_date wins (existing vs incoming).
+  - GET /api/medicines/expiry-alerts (pharmacy only) groups items
+    into expired / critical_7 / warning_30 / soon_90 buckets.
+  - Backward compat: /api/medicines listing still works.
+  - Role enforcement: supplier 403, unauth 401.
+  - No regression: /api/orders/optimize, /api/auth/login.
+
+Public URL is read from /app/frontend/.env (EXPO_PUBLIC_BACKEND_URL).
 """
-import os
-import sys
-import uuid
 import json
-import time
-import requests
-from pymongo import MongoClient
+import sys
 from datetime import datetime, timezone, timedelta
 
-BACKEND_URL = "https://pharma-checkout-8.preview.emergentagent.com/api"
-MONGO_URL = "mongodb://localhost:27017"
-DB_NAME = "pharmacy_db"
-
-mongo = MongoClient(MONGO_URL)
-db = mongo[DB_NAME]
-
-results = []  # list of (name, ok, detail)
+import requests
 
 
-def log(name, ok, detail=""):
-    icon = "PASS" if ok else "FAIL"
-    print(f"[{icon}] {name} :: {detail}")
-    results.append((name, ok, detail))
+def _read_env(path: str, key: str):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if ln.startswith(f"{key}="):
+                    return ln.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return None
 
 
-def req(method, path, token=None, json_body=None, expect_status=None):
-    h = {"Content-Type": "application/json"}
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    url = f"{BACKEND_URL}{path}"
-    r = requests.request(method, url, headers=h, json=json_body, timeout=30)
-    if expect_status is not None and r.status_code != expect_status:
-        print(f"  WARN {method} {path} -> {r.status_code} (expected {expect_status}) body={r.text[:300]}")
-    return r
-
-
-# ---- 0. Setup actors ----
-print("\n=== 0. Setup actors ===")
-
-RUN = uuid.uuid4().hex[:6]
-
-PHARM = {"name": "صيدلية اختبار LC", "phone": f"077{int(time.time())%100000000:08d}",
-         "password": "Ph1234!", "address": "بغداد - الكرادة", "region": "بغداد"}
-SUP1 = {"name": "مذخر بغداد LC", "phone": f"078{(int(time.time())+1)%100000000:08d}",
-        "password": "Su1234!", "address": "بغداد - الكاظمية", "region": "بغداد"}
-SUP2 = {"name": "مذخر بغداد LC2", "phone": f"079{(int(time.time())+2)%100000000:08d}",
-        "password": "Sw1234!", "address": "بغداد - المنصور", "region": "بغداد"}
-SUPBASRA = {"name": "مذخر البصرة LC", "phone": f"076{(int(time.time())+3)%100000000:08d}",
-            "password": "Sb1234!", "address": "البصرة", "region": "البصرة"}
-
-
-def register(role, data):
-    r = req("POST", f"/{role}/register", json_body=data)
-    if r.status_code == 400 and "مسجل" in r.text:
-        rl = req("POST", f"/{role}/login", json_body={"phone": data["phone"], "password": data["password"]})
-        if rl.status_code != 200:
-            raise RuntimeError(f"register&login failed for {role} {data['phone']}: {rl.text}")
-        return rl.json()
-    if r.status_code != 200:
-        raise RuntimeError(f"register {role} failed: {r.status_code} {r.text}")
-    return r.json()
-
-
-pharm_obj = register("pharmacy", PHARM)
-sup1_obj = register("supplier", SUP1)
-sup2_obj = register("supplier", SUP2)
-supbasra_obj = register("supplier", SUPBASRA)
-
-tok_pharm = pharm_obj["token"]
-tok_sup1 = sup1_obj["token"]
-tok_sup2 = sup2_obj["token"]
-tok_supbasra = supbasra_obj["token"]
-sid1 = sup1_obj["supplier"]["id"]
-sid2 = sup2_obj["supplier"]["id"]
-sidbasra = supbasra_obj["supplier"]["id"]
-pid = pharm_obj["pharmacy"]["id"]
-
-log("setup actors registered", True, f"pid={pid} sid1={sid1} sid2={sid2} sidbasra={sidbasra}")
-
-# Admin login
-admin_resp = req("POST", "/admin/login", json_body={"phone": "0000000000", "password": "admin123"})
-if admin_resp.status_code != 200:
-    raise RuntimeError(f"admin login failed: {admin_resp.text}")
-tok_admin = admin_resp.json()["token"]
-log("admin login", True)
-
-
-def add_prod(token, name, price, qty=100):
-    r = req("POST", "/supplier/products", token=token,
-            json_body={"name": name, "price": price, "quantity": qty})
-    if r.status_code != 200:
-        raise RuntimeError(f"add product failed: {r.text}")
-    return r.json()
-
-
-# Use truly distinct names — no shared tokens of length >=3 — to avoid
-# Arabic-aware matcher fan-out between unrelated products.
-NAME_A = f"PanadolA{RUN[:3]}"
-NAME_B = f"AmoxilB{RUN[3:6]}"
-NAME_BASRA = f"BasrolBA{RUN[:2]}{RUN[4:6]}"
-
-add_prod(tok_sup1, NAME_A, 1000, 100)
-add_prod(tok_sup2, NAME_B, 2000, 100)
-add_prod(tok_supbasra, NAME_BASRA, 500, 100)
-log("setup products added", True)
-
-
-def commission_count(supplier_id):
-    return db.supplier_sales.count_documents({"supplier_id": supplier_id})
-
-
-# =============================================================
-# TEST 1: Commit creates orders, NOT commissions
-# =============================================================
-print("\n=== TEST 1: Commit creates orders, NOT commissions ===")
-
-before_sid1 = commission_count(sid1)
-before_sid2 = commission_count(sid2)
-
-opt = req("POST", "/orders/optimize", token=tok_pharm,
-          json_body={"items": [{"name": NAME_A, "quantity": 5},
-                                {"name": NAME_B, "quantity": 3}]})
-if opt.status_code != 200:
-    log("TEST 1 optimize", False, opt.text)
+BASE_URL = (_read_env("/app/frontend/.env", "EXPO_PUBLIC_BACKEND_URL") or "").rstrip("/")
+if not BASE_URL:
+    print("Missing EXPO_PUBLIC_BACKEND_URL in /app/frontend/.env")
     sys.exit(1)
-optdata = opt.json()
-groups = optdata.get("smart_split", {}).get("groups", [])
-log("TEST 1 optimize yields 2 supplier groups", len(groups) >= 2, f"groups={len(groups)}")
+API = BASE_URL + "/api"
 
-commit_id = str(uuid.uuid4())
-commit_payload = {
-    "commit_id": commit_id,
-    "groups": [
-        {"supplier_id": g["supplier_id"], "supplier_name": g["supplier_name"],
-         "items": [{"name": it["name"], "quantity": it["quantity"], "unit_price": it["unit_price"]}
-                   for it in g["items"]],
-         "total": g["total"]} for g in groups
-    ],
-}
-commit_resp = req("POST", "/orders/optimize/commit", token=tok_pharm, json_body=commit_payload)
-log("TEST 1 commit status==200", commit_resp.status_code == 200, commit_resp.text[:200])
-body = commit_resp.json()
-log("TEST 1 commit status=ok", body.get("status") == "ok", str(body)[:200])
-log("TEST 1 commit created==2", body.get("created") == 2, f"created={body.get('created')}")
-log("TEST 1 commit returns orders array",
-    isinstance(body.get("orders"), list) and len(body["orders"]) == 2,
-    f"orders={body.get('orders')}")
+PHARMACY_PHONE = "07700000001"
+PHARMACY_PASS = "pass123"
+SUPPLIER_PHONE = "07811111111"
+SUPPLIER_PASS = "sup1"
 
-after_sid1 = commission_count(sid1)
-after_sid2 = commission_count(sid2)
-log("TEST 1 NO commission created for sup1 on commit", after_sid1 == before_sid1,
-    f"before={before_sid1} after={after_sid1}")
-log("TEST 1 NO commission created for sup2 on commit", after_sid2 == before_sid2,
-    f"before={before_sid2} after={after_sid2}")
-
-ord_sid1_id = None
-ord_sid2_id = None
-for o in body.get("orders", []):
-    od = db.orders.find_one({"id": o["id"]}, {"_id": 0, "supplier_id": 1})
-    if od and od["supplier_id"] == sid1:
-        ord_sid1_id = o["id"]
-    elif od and od["supplier_id"] == sid2:
-        ord_sid2_id = o["id"]
-log("TEST 1 mapping orders to suppliers", ord_sid1_id is not None and ord_sid2_id is not None,
-    f"sid1_order={ord_sid1_id} sid2_order={ord_sid2_id}")
+PASS_COUNT = 0
+FAIL_COUNT = 0
+FAILS = []
 
 
-# =============================================================
-# TEST 2: Idempotency
-# =============================================================
-print("\n=== TEST 2: Idempotency ===")
-re_commit = req("POST", "/orders/optimize/commit", token=tok_pharm, json_body=commit_payload)
-log("TEST 2 idempotency status==200", re_commit.status_code == 200)
-rb = re_commit.json()
-log("TEST 2 idempotency status=already_committed", rb.get("status") == "already_committed", str(rb))
-log("TEST 2 idempotency created==0", rb.get("created") == 0, str(rb))
-total_orders_for_commit = db.orders.count_documents({"commit_id": commit_id})
-log("TEST 2 only 2 orders for commit_id", total_orders_for_commit == 2,
-    f"count={total_orders_for_commit}")
+def _log(ok, label, info=""):
+    global PASS_COUNT, FAIL_COUNT
+    if ok:
+        PASS_COUNT += 1
+        print(f"  ✅ {label}")
+    else:
+        FAIL_COUNT += 1
+        FAILS.append(f"{label} | {info}")
+        print(f"  ❌ {label}  → {info}")
 
 
-# =============================================================
-# TEST 3: Anti-circumvention
-# =============================================================
-print("\n=== TEST 3: Anti-circumvention ===")
-r = req("GET", "/supplier/orders?status=pending", token=tok_sup1)
-log("TEST 3 sup1 GET pending status==200", r.status_code == 200, r.text[:300])
-docs = r.json()
-target = next((d for d in docs if d["id"] == ord_sid1_id), None)
-log("TEST 3 sup1 sees own pending order", target is not None, str([d["id"] for d in docs])[:200])
-if target:
-    log("TEST 3 pharmacy_name is None (pending)", target.get("pharmacy_name") is None,
-        f"value={target.get('pharmacy_name')!r}")
-    log("TEST 3 pharmacy_phone is None (pending)", target.get("pharmacy_phone") is None,
-        f"value={target.get('pharmacy_phone')!r}")
-    log("TEST 3 pharmacy_address is None (pending)", target.get("pharmacy_address") is None,
-        f"value={target.get('pharmacy_address')!r}")
-    log("TEST 3 pharmacy_region visible (pending)", bool(target.get("pharmacy_region")),
-        f"value={target.get('pharmacy_region')!r}")
-
-r = req("PATCH", f"/supplier/orders/{ord_sid1_id}/accept", token=tok_sup1)
-log("TEST 3 sup1 accept status==200", r.status_code == 200, r.text[:200])
-
-r = req("GET", "/supplier/orders?status=accepted", token=tok_sup1)
-docs = r.json()
-target = next((d for d in docs if d["id"] == ord_sid1_id), None)
-log("TEST 3 sup1 sees accepted order", target is not None)
-if target:
-    log("TEST 3 pharmacy_name visible after accept", target.get("pharmacy_name") == PHARM["name"],
-        f"value={target.get('pharmacy_name')!r}")
-    log("TEST 3 pharmacy_phone visible after accept", target.get("pharmacy_phone") == PHARM["phone"],
-        f"value={target.get('pharmacy_phone')!r}")
-    log("TEST 3 pharmacy_address visible after accept", target.get("pharmacy_address") == PHARM["address"],
-        f"value={target.get('pharmacy_address')!r}")
+def assert_eq(actual, expected, label):
+    _log(actual == expected, label, f"expected {expected!r}, got {actual!r}")
 
 
-# =============================================================
-# TEST 4: Happy path state transitions
-# =============================================================
-print("\n=== TEST 4: Happy path state transitions ===")
-r = req("PATCH", f"/supplier/orders/{ord_sid1_id}/processing", token=tok_sup1)
-log("TEST 4 accepted->processing", r.status_code == 200, r.text[:200])
-
-r = req("PATCH", f"/supplier/orders/{ord_sid1_id}/delivered", token=tok_sup1)
-log("TEST 4 processing->delivered", r.status_code == 200, r.text[:200])
-
-before_commission = commission_count(sid1)
-r = req("PATCH", f"/pharmacy/orders/{ord_sid1_id}/confirm-receipt", token=tok_pharm)
-log("TEST 4 delivered->completed (pharmacy confirm)", r.status_code == 200, r.text[:300])
-rj = r.json()
-log("TEST 4 response order_status==completed", rj.get("order_status") == "completed", str(rj))
-log("TEST 4 response has commission_amount", rj.get("commission_amount") is not None, str(rj))
-log("TEST 4 response has commission_id", rj.get("commission_id") is not None, str(rj))
-
-od = db.orders.find_one({"id": ord_sid1_id}, {"_id": 0})
-expected_commission = round(od["total"] * 0.04, 2)
-log("TEST 4 db.orders.status==completed", od["status"] == "completed")
-log("TEST 4 commission_amount == total*0.04",
-    abs((od.get("commission_amount") or 0) - expected_commission) < 0.01,
-    f"got={od.get('commission_amount')} expected={expected_commission} total={od['total']}")
-log("TEST 4 commission_id present", bool(od.get("commission_id")))
-
-after_commission = commission_count(sid1)
-log("TEST 4 +1 supplier_sales record for sup1",
-    after_commission == before_commission + 1,
-    f"before={before_commission} after={after_commission}")
-
-r = req("GET", "/supplier/commissions", token=tok_sup1)
-records = r.json().get("records", [])
-new_rec = next((x for x in records if x.get("order_id") == ord_sid1_id), None)
-log("TEST 4 /supplier/commissions shows new record", new_rec is not None)
-if new_rec:
-    log("TEST 4 commission rate=0.04 in record", abs((new_rec.get("rate") or 0) - 0.04) < 0.001,
-        f"rate={new_rec.get('rate')}")
-    log("TEST 4 commission status=pending (unpaid)", new_rec.get("status") == "pending",
-        f"status={new_rec.get('status')}")
+def assert_true(cond, label, info=""):
+    _log(bool(cond), label, info)
 
 
-# =============================================================
-# TEST 5: Bad transitions return 400
-# =============================================================
-print("\n=== TEST 5: Bad transitions ===")
-r = req("PATCH", f"/supplier/orders/{ord_sid2_id}/delivered", token=tok_sup2)
-log("TEST 5 pending->delivered returns 400", r.status_code == 400, f"got {r.status_code} {r.text[:200]}")
-
-r = req("PATCH", f"/supplier/orders/{ord_sid2_id}/accept", token=tok_sup2)
-log("TEST 5 setup accept sid2", r.status_code == 200, r.text[:200])
-r = req("PATCH", f"/pharmacy/orders/{ord_sid2_id}/confirm-receipt", token=tok_pharm)
-log("TEST 5 accepted->confirm-receipt returns 400", r.status_code == 400, f"got {r.status_code} {r.text[:200]}")
-
-r = req("PATCH", f"/supplier/orders/{ord_sid1_id}/accept", token=tok_sup1)
-log("TEST 5 completed->accept returns 400", r.status_code == 400, f"got {r.status_code}")
-r = req("PATCH", f"/supplier/orders/{ord_sid1_id}/delivered", token=tok_sup1)
-log("TEST 5 completed->delivered returns 400", r.status_code == 400, f"got {r.status_code}")
-r = req("PATCH", f"/pharmacy/orders/{ord_sid1_id}/confirm-receipt", token=tok_pharm)
-log("TEST 5 completed->confirm-receipt returns 400", r.status_code == 400, f"got {r.status_code}")
+def hdr(t):
+    return {"Authorization": f"Bearer {t}"} if t else {}
 
 
-# =============================================================
-# TEST 6: Role enforcement
-# =============================================================
-print("\n=== TEST 6: Role enforcement ===")
-r = req("PATCH", f"/supplier/orders/{ord_sid2_id}/accept", token=tok_pharm)
-log("TEST 6 pharmacy on /supplier/accept returns 403",
-    r.status_code == 403, f"got {r.status_code} {r.text[:200]}")
-
-r = req("PATCH", f"/supplier/orders/{ord_sid2_id}/accept", token=tok_sup1)
-log("TEST 6 other supplier on someone else's order returns 403",
-    r.status_code == 403, f"got {r.status_code} {r.text[:200]}")
-
-r = req("PATCH", f"/pharmacy/orders/{ord_sid2_id}/confirm-receipt", token=tok_sup1)
-log("TEST 6 supplier on /pharmacy/confirm-receipt returns 403",
-    r.status_code == 403, f"got {r.status_code} {r.text[:200]}")
+def post(path, token=None, body=None):
+    return requests.post(API + path,
+                         headers={**hdr(token), "Content-Type": "application/json"},
+                         data=json.dumps(body or {}), timeout=30)
 
 
-# =============================================================
-# TEST 7: Reject
-# =============================================================
-print("\n=== TEST 7: Reject ===")
-new_commit = str(uuid.uuid4())
-single_group = {
-    "commit_id": new_commit,
-    "groups": [{
-        "supplier_id": sid2,
-        "supplier_name": SUP2["name"],
-        "items": [{"name": NAME_B, "quantity": 2, "unit_price": 2000}],
-        "total": 4000,
-    }],
-}
-r = req("POST", "/orders/optimize/commit", token=tok_pharm, json_body=single_group)
-log("TEST 7 setup commit for reject", r.status_code == 200, r.text[:200])
-created = r.json().get("orders") or []
-if created:
-    fresh_order_id = created[0]["id"]
-    before_comm_sid2 = commission_count(sid2)
-    rr = req("PATCH", f"/supplier/orders/{fresh_order_id}/reject", token=tok_sup2,
-             json_body={"reason": "نفاد المخزون"})
-    log("TEST 7 reject status==200", rr.status_code == 200, rr.text[:200])
-    od = db.orders.find_one({"id": fresh_order_id}, {"_id": 0})
-    log("TEST 7 db.orders.status==rejected", od["status"] == "rejected", f"status={od['status']}")
-    log("TEST 7 rejection_reason saved", od.get("rejection_reason") == "نفاد المخزون",
-        f"reason={od.get('rejection_reason')!r}")
-    log("TEST 7 NO commission created on reject",
-        commission_count(sid2) == before_comm_sid2,
-        f"before={before_comm_sid2} after={commission_count(sid2)}")
-else:
-    log("TEST 7 setup got new order", False, str(r.json()))
+def get(path, token=None):
+    return requests.get(API + path, headers=hdr(token), timeout=30)
 
 
-# =============================================================
-# TEST 8: Stats endpoint
-# =============================================================
-print("\n=== TEST 8: Stats endpoint ===")
-r = req("GET", "/supplier/orders/stats", token=tok_sup1)
-log("TEST 8 stats status==200", r.status_code == 200, r.text[:300])
-stats = r.json()
-log("TEST 8 by_status present", "by_status" in stats, str(stats)[:300])
-log("TEST 8 completed_total present", "completed_total" in stats)
-log("TEST 8 commission_due_total present", "commission_due_total" in stats)
-log("TEST 8 rate==0.04", abs(stats.get("rate", 0) - 0.04) < 0.001, f"rate={stats.get('rate')}")
-ct = float(stats.get("completed_total") or 0)
-cd = float(stats.get("commission_due_total") or 0)
-log("TEST 8 commission_due_total == completed_total*0.04",
-    abs(cd - round(ct * 0.04, 2)) < 0.01,
-    f"completed_total={ct} commission_due_total={cd}")
+def login_pharmacy():
+    r = post("/auth/login", body={"phone": PHARMACY_PHONE, "password": PHARMACY_PASS})
+    assert_eq(r.status_code, 200, "Pharmacy login status=200")
+    j = r.json()
+    assert_eq(j.get("role"), "pharmacy", "Pharmacy login role")
+    return j["token"]
 
 
-# =============================================================
-# TEST 9: Auto-complete after 72h (simulated)
-# =============================================================
-print("\n=== TEST 9: Auto-complete after 72h ===")
-auto_commit = str(uuid.uuid4())
-ac_group = {
-    "commit_id": auto_commit,
-    "groups": [{
-        "supplier_id": sid2,
-        "supplier_name": SUP2["name"],
-        "items": [{"name": NAME_B, "quantity": 1, "unit_price": 2000}],
-        "total": 2000,
-    }],
-}
-r = req("POST", "/orders/optimize/commit", token=tok_pharm, json_body=ac_group)
-log("TEST 9 setup commit", r.status_code == 200, r.text[:200])
-ac_order_id = r.json()["orders"][0]["id"]
-
-r = req("PATCH", f"/supplier/orders/{ac_order_id}/accept", token=tok_sup2)
-log("TEST 9 accept", r.status_code == 200)
-r = req("PATCH", f"/supplier/orders/{ac_order_id}/processing", token=tok_sup2)
-log("TEST 9 processing", r.status_code == 200)
-r = req("PATCH", f"/supplier/orders/{ac_order_id}/delivered", token=tok_sup2)
-log("TEST 9 delivered", r.status_code == 200)
-
-backdated = (datetime.now(timezone.utc) - timedelta(hours=80)).isoformat()
-db.orders.update_one({"id": ac_order_id}, {"$set": {"delivered_at": backdated}})
-log("TEST 9 backdated delivered_at to >72h", True, backdated)
-
-before_comm = commission_count(sid2)
-
-r = req("GET", "/supplier/orders", token=tok_sup2)
-log("TEST 9 GET /supplier/orders to trigger auto-complete", r.status_code == 200)
-
-od = db.orders.find_one({"id": ac_order_id}, {"_id": 0})
-log("TEST 9 auto-bumped to completed", od["status"] == "completed", f"status={od['status']}")
-log("TEST 9 auto_completed==True", od.get("auto_completed") is True, f"auto_completed={od.get('auto_completed')}")
-log("TEST 9 commission_amount set",
-    bool(od.get("commission_amount")) and abs(od["commission_amount"] - round(2000 * 0.04, 2)) < 0.01,
-    f"commission_amount={od.get('commission_amount')}")
-log("TEST 9 commission record created in supplier_sales",
-    commission_count(sid2) == before_comm + 1,
-    f"before={before_comm} after={commission_count(sid2)}")
+def login_supplier():
+    r = post("/auth/login", body={"phone": SUPPLIER_PHONE, "password": SUPPLIER_PASS})
+    if r.status_code == 403:
+        ar = post("/auth/login", body={"phone": "0000000000", "password": "admin123"})
+        if ar.status_code == 200:
+            atok = ar.json()["token"]
+            for u in get("/admin/users?role=supplier", atok).json():
+                if u.get("phone") == SUPPLIER_PHONE:
+                    requests.patch(
+                        f"{API}/admin/users/supplier/{u['id']}",
+                        headers={**hdr(atok), "Content-Type": "application/json"},
+                        data=json.dumps({"disabled": False}),
+                        timeout=30,
+                    )
+        r = post("/auth/login", body={"phone": SUPPLIER_PHONE, "password": SUPPLIER_PASS})
+    assert_eq(r.status_code, 200, "Supplier login status=200")
+    j = r.json()
+    assert_eq(j.get("role"), "supplier", "Supplier login role")
+    return j["token"]
 
 
-# =============================================================
-# TEST 10: Commission upload-proof + admin pay continues to work
-# =============================================================
-print("\n=== TEST 10: Commission upload-proof + admin pay still work ===")
-auto_comm = db.supplier_sales.find_one({"order_id": ac_order_id}, {"_id": 0})
-if not auto_comm:
-    log("TEST 10 commission record exists for auto-completed order", False, "")
-else:
-    rid = auto_comm["id"]
-    r = req("POST", f"/supplier/commissions/{rid}/upload-proof", token=tok_sup2,
-            json_body={"proof_b64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="})
-    log("TEST 10 upload-proof status==200", r.status_code == 200, r.text[:200])
-    after = db.supplier_sales.find_one({"id": rid}, {"_id": 0})
-    log("TEST 10 status==submitted after upload-proof", after.get("status") == "submitted",
-        f"status={after.get('status')}")
-    r = req("PATCH", f"/admin/commissions/{rid}/confirm", token=tok_admin)
-    log("TEST 10 admin confirm-payment status==200", r.status_code == 200, r.text[:200])
-    after = db.supplier_sales.find_one({"id": rid}, {"_id": 0})
-    log("TEST 10 status==paid after admin confirm", after.get("status") == "paid",
-        f"status={after.get('status')}")
+def today_utc():
+    return datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-# =============================================================
-# TEST 11: Region enforcement on commit still works
-# =============================================================
-print("\n=== TEST 11: Region enforcement on commit ===")
-r = req("PATCH", "/admin/payment-settings", token=tok_admin,
-        json_body={"marketplace_mode": "local"})
-log("TEST 11 ensure local mode", r.status_code == 200)
-
-bad_commit = {
-    "commit_id": str(uuid.uuid4()),
-    "groups": [{
-        "supplier_id": sidbasra,
-        "supplier_name": SUPBASRA["name"],
-        "items": [{"name": NAME_BASRA, "quantity": 1, "unit_price": 500}],
-        "total": 500,
-    }],
-}
-r = req("POST", "/orders/optimize/commit", token=tok_pharm, json_body=bad_commit)
-log("TEST 11 out-of-region commit returns 403",
-    r.status_code == 403, f"got {r.status_code} {r.text[:200]}")
+def fmt(d):
+    return d.strftime("%Y-%m-%d")
 
 
-# ---- Summary ----
-print("\n========== SUMMARY ==========")
-passed = sum(1 for _, ok, _ in results if ok)
-failed = sum(1 for _, ok, _ in results if not ok)
-print(f"PASS: {passed}    FAIL: {failed}    TOTAL: {len(results)}")
-if failed > 0:
-    print("\nFailed assertions:")
-    for n, ok, d in results:
-        if not ok:
-            print(f"  - {n} :: {d}")
-sys.exit(0 if failed == 0 else 1)
+def find_med(token, name):
+    r = get("/medicines?limit=500", token)
+    if r.status_code != 200:
+        return None
+    for m in r.json():
+        if m.get("name") == name:
+            return m
+    return None
+
+
+def cleanup(token):
+    names = {"ExpTest_FAR", "ExpTest_30D", "ExpTest_7D", "ExpTest_EXPIRED",
+             "ExpTest_90D", "ExpTest_OK", "ExpTest_NOEXP", "ExpTest_YM"}
+    r = get("/medicines?limit=500", token)
+    if r.status_code != 200:
+        return
+    for m in r.json():
+        if m.get("name") in names:
+            requests.delete(f"{API}/medicines/{m['id']}", headers=hdr(token), timeout=30)
+
+
+def main():
+    print(f"Base URL: {API}")
+
+    print("\n=== Login ===")
+    pharm_tok = login_pharmacy()
+    sup_tok = login_supplier()
+
+    cleanup(pharm_tok)
+
+    today = today_utc()
+    in_5 = fmt(today + timedelta(days=5))
+    in_15 = fmt(today + timedelta(days=15))
+    in_60 = fmt(today + timedelta(days=60))
+    in_120 = fmt(today + timedelta(days=120))
+    past_10 = fmt(today - timedelta(days=10))
+
+    # ============ A. Buy creates medicine with expiry ============
+    print("\n=== A. Buy creates medicines with expiry_date ===")
+    cases_a = [
+        ("ExpTest_FAR", "2029-12-31"),
+        ("ExpTest_30D", in_15),
+        ("ExpTest_7D", in_5),
+        ("ExpTest_EXPIRED", past_10),
+        ("ExpTest_90D", in_60),
+        ("ExpTest_OK", in_120),
+    ]
+    for name, exp in cases_a:
+        r = post("/medicines/buy", pharm_tok,
+                 {"name": name, "quantity": 5, "price": 1000, "expiry_date": exp})
+        assert_eq(r.status_code, 200, f"A.buy {name} status=200")
+        m = find_med(pharm_tok, name)
+        assert_true(m is not None, f"A.buy {name} exists in list")
+        if m:
+            assert_eq(m.get("expiry_date"), exp, f"A.buy {name} expiry_date stored")
+            assert_eq(m.get("quantity"), 5, f"A.buy {name} quantity=5")
+
+    # ============ B. Validation ============
+    print("\n=== B. Validation ===")
+    r = post("/medicines/buy", pharm_tok,
+             {"name": "ExpTest_Bad", "quantity": 1, "price": 100, "expiry_date": "garbage"})
+    assert_eq(r.status_code, 400, "B1 garbage expiry_date → 400")
+    try:
+        detail = r.json().get("detail", "")
+    except Exception:
+        detail = r.text
+    assert_true("غير صالح" in str(detail), "B1 detail mentions 'غير صالح'", info=str(detail))
+
+    r = post("/medicines/buy", pharm_tok,
+             {"name": "ExpTest_YM", "quantity": 2, "price": 200, "expiry_date": "2027-12"})
+    assert_eq(r.status_code, 200, "B2 YYYY-MM accepted (200)")
+    m = find_med(pharm_tok, "ExpTest_YM")
+    assert_true(m is not None, "B2 ExpTest_YM exists")
+    if m:
+        assert_eq(m.get("expiry_date"), "2027-12-01", "B2 expiry_date stored as YYYY-MM-01")
+
+    r = post("/medicines/buy", pharm_tok,
+             {"name": "ExpTest_NOEXP", "quantity": 3, "price": 300})
+    assert_eq(r.status_code, 200, "B3 no expiry_date → 200")
+    m = find_med(pharm_tok, "ExpTest_NOEXP")
+    assert_true(m is not None, "B3 ExpTest_NOEXP exists")
+    if m:
+        ev = m.get("expiry_date")
+        assert_true(ev in (None, ""), "B3 expiry_date is null/empty", info=f"got {ev!r}")
+
+    # ============ C. Merge logic ============
+    print("\n=== C. Merge on duplicate ===")
+    r = post("/medicines/buy", pharm_tok,
+             {"name": "ExpTest_FAR", "quantity": 3, "price": 1100, "expiry_date": "2028-06-30"})
+    assert_eq(r.status_code, 200, "C1 duplicate buy → 200")
+    m = find_med(pharm_tok, "ExpTest_FAR")
+    if m:
+        assert_eq(m.get("quantity"), 8, "C1 quantity summed (5+3=8)")
+        assert_eq(m.get("price"), 1100, "C1 price overwritten to 1100")
+        assert_eq(m.get("expiry_date"), "2028-06-30", "C1 earlier expiry kept (2028-06-30)")
+
+    r = post("/medicines/buy", pharm_tok,
+             {"name": "ExpTest_FAR", "quantity": 2, "price": 1100, "expiry_date": "2030-01-01"})
+    assert_eq(r.status_code, 200, "C2 duplicate buy → 200")
+    m = find_med(pharm_tok, "ExpTest_FAR")
+    if m:
+        assert_eq(m.get("quantity"), 10, "C2 quantity summed (8+2=10)")
+        assert_eq(m.get("expiry_date"), "2028-06-30", "C2 earlier expiry kept (2028-06-30 not 2030-01-01)")
+
+    # ============ D. Expiry alerts ============
+    print("\n=== D. /medicines/expiry-alerts ===")
+    r = get("/medicines/expiry-alerts", pharm_tok)
+    assert_eq(r.status_code, 200, "D GET /medicines/expiry-alerts status=200")
+    if r.status_code == 200:
+        body = r.json()
+        for k in ("today", "groups", "counts", "total_alerts"):
+            assert_true(k in body, f"D response has '{k}'", info=str(list(body.keys())))
+        groups = body.get("groups", {}) or {}
+        for g in ("expired", "critical_7", "warning_30", "soon_90"):
+            assert_true(g in groups, f"D groups has '{g}'", info=str(list(groups.keys())))
+
+        names_by_group = {g: [it.get("name") for it in groups.get(g, [])] for g in groups}
+
+        assert_true("ExpTest_EXPIRED" in names_by_group.get("expired", []),
+                    "D ExpTest_EXPIRED in groups.expired", info=str(names_by_group))
+        assert_true("ExpTest_7D" in names_by_group.get("critical_7", []),
+                    "D ExpTest_7D in groups.critical_7", info=str(names_by_group))
+        assert_true("ExpTest_30D" in names_by_group.get("warning_30", []),
+                    "D ExpTest_30D in groups.warning_30", info=str(names_by_group))
+        assert_true("ExpTest_90D" in names_by_group.get("soon_90", []),
+                    "D ExpTest_90D in groups.soon_90", info=str(names_by_group))
+
+        all_names = []
+        for g in groups.values():
+            all_names.extend(it.get("name") for it in g)
+        assert_true("ExpTest_OK" not in all_names, "D ExpTest_OK NOT in any group")
+        assert_true("ExpTest_FAR" not in all_names, "D ExpTest_FAR NOT in any group")
+        assert_true("ExpTest_NOEXP" not in all_names, "D ExpTest_NOEXP NOT in any group")
+
+        for item in groups.get("expired", []):
+            if item.get("name") == "ExpTest_EXPIRED":
+                assert_eq(item.get("status"), "expired", "D ExpTest_EXPIRED status=expired")
+                dl = item.get("days_left")
+                assert_true(isinstance(dl, int) and dl < 0,
+                            "D ExpTest_EXPIRED days_left < 0", info=f"got {dl!r}")
+        for item in groups.get("critical_7", []):
+            if item.get("name") == "ExpTest_7D":
+                assert_eq(item.get("status"), "critical_7", "D ExpTest_7D status=critical_7")
+                dl = item.get("days_left")
+                assert_true(isinstance(dl, int) and 0 <= dl <= 7,
+                            "D ExpTest_7D 0<=days_left<=7", info=f"got {dl!r}")
+        for item in groups.get("warning_30", []):
+            if item.get("name") == "ExpTest_30D":
+                assert_eq(item.get("status"), "warning_30", "D ExpTest_30D status=warning_30")
+                dl = item.get("days_left")
+                assert_true(isinstance(dl, int) and 8 <= dl <= 30,
+                            "D ExpTest_30D 8<=days_left<=30", info=f"got {dl!r}")
+        for item in groups.get("soon_90", []):
+            if item.get("name") == "ExpTest_90D":
+                assert_eq(item.get("status"), "soon_90", "D ExpTest_90D status=soon_90")
+                dl = item.get("days_left")
+                assert_true(isinstance(dl, int) and 31 <= dl <= 90,
+                            "D ExpTest_90D 31<=days_left<=90", info=f"got {dl!r}")
+
+        counts = body.get("counts", {}) or {}
+        if counts:
+            assert_eq(body.get("total_alerts"), sum(counts.values()),
+                      "D total_alerts == sum(counts)")
+
+    r = get("/medicines?limit=500", pharm_tok)
+    assert_eq(r.status_code, 200, "D2 GET /medicines status=200")
+    if r.status_code == 200:
+        meds = r.json()
+        with_exp = [m for m in meds if m.get("expiry_date")]
+        assert_true(len(with_exp) > 0, "D2 some medicines carry expiry_date field")
+        noexp = [m for m in meds if m.get("name") == "ExpTest_NOEXP"]
+        assert_true(len(noexp) == 1, "D2 ExpTest_NOEXP present without expiry_date")
+
+    # ============ E. Role enforcement ============
+    print("\n=== E. Role enforcement ===")
+    r = post("/medicines/buy", sup_tok,
+             {"name": "X", "quantity": 1, "price": 1, "expiry_date": "2030-01-01"})
+    assert_eq(r.status_code, 403, "E1 supplier /medicines/buy → 403")
+    r = get("/medicines/expiry-alerts", sup_tok)
+    assert_eq(r.status_code, 403, "E2 supplier /medicines/expiry-alerts → 403")
+    r = post("/medicines/buy", None, {"name": "X", "quantity": 1, "price": 1})
+    assert_eq(r.status_code, 401, "E3 unauth /medicines/buy → 401")
+    r = get("/medicines/expiry-alerts", None)
+    assert_eq(r.status_code, 401, "E4 unauth /medicines/expiry-alerts → 401")
+
+    # ============ F. No regression ============
+    print("\n=== F. No regression ===")
+    r = post("/orders/optimize", pharm_tok, {"items": [{"name": "Paracetamol", "quantity": 1}]})
+    assert_eq(r.status_code, 200, "F1 /orders/optimize status=200")
+    if r.status_code == 200:
+        j = r.json()
+        for k in ("unavailable", "per_item", "single_supplier", "smart_split", "summary"):
+            assert_true(k in j, f"F1 optimize has '{k}'")
+
+    r = get("/medicines?limit=10", pharm_tok)
+    assert_eq(r.status_code, 200, "F2 /medicines list status=200")
+
+    r = post("/auth/login", body={"phone": PHARMACY_PHONE, "password": PHARMACY_PASS})
+    assert_eq(r.status_code, 200, "F3 /auth/login status=200")
+    if r.status_code == 200:
+        j = r.json()
+        for k in ("token", "role", "user"):
+            assert_true(k in j, f"F3 login has '{k}'", info=str(list(j.keys())))
+        assert_eq(j.get("role"), "pharmacy", "F3 login role=pharmacy")
+
+    cleanup(pharm_tok)
+
+    print(f"\n=== SUMMARY: {PASS_COUNT} passed / {FAIL_COUNT} failed ===")
+    if FAIL_COUNT:
+        print("\nFailures:")
+        for f in FAILS:
+            print(" -", f)
+    sys.exit(0 if FAIL_COUNT == 0 else 1)
+
+
+if __name__ == "__main__":
+    main()
