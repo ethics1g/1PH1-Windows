@@ -809,10 +809,74 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Pharmacy Savings Feature (cumulative + per-supplier %)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+backend_new:
+  - task: "Pharmacy Savings Feature (cumulative_savings credit on completion + GET /api/pharmacy/savings)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Implementation summary:
+            1. CommitOrderIn now accepts optional `savings_estimate_total` + `savings_per_group` (float list).
+               commit_order distributes them proportionally to each group's `total` if `savings_per_group`
+               not provided, then stores `savings_estimate` and `savings_credited=false` on each order doc.
+            2. _complete_order(): after transitioning to 'completed', if `savings_estimate>0` AND
+               `savings_credited` is false → $inc pharmacies.cumulative_savings by that amount and set
+               `cumulative_savings_updated_at`; then mark `savings_credited=true` on the order
+               (idempotency). Wrapped in try/except so failure here is non-fatal.
+            3. NEW endpoint `GET /api/pharmacy/savings` (pharmacy role only) → returns
+               { cumulative_savings: float, updated_at: ISO|null, completed_orders: int }.
+
+            Please verify:
+            - Login pharmacy 07700000001/pass123.
+            - GET /api/pharmacy/savings before any new completion → baseline value (read & remember).
+            - As pharmacy, POST /orders/optimize then /orders/optimize/commit with
+              `savings_estimate_total` and groups; expect each created order has `savings_estimate>0`
+              and `savings_credited=false`.
+            - As supplier, walk one order pending→accept→processing→delivered.
+            - As pharmacy, /pharmacy/orders/{id}/confirm-receipt → order completes; verify
+              `cumulative_savings` increased by exactly that order's savings_estimate (rounded 2dp),
+              `savings_credited=true`, and a 2nd confirm-receipt does NOT double-credit.
+            - Test auto-complete path (backdate delivered_at by >72h) → also credits savings once.
+            - Role enforcement: supplier hitting /api/pharmacy/savings → 403; unauthenticated → 401.
+
+frontend_new:
+  - task: "Optimize screen Savings UI (banner + per-supplier %)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/optimize.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            On /optimize:
+            - On mount, in parallel with /orders/optimize: GET /pharmacy/savings → stored in state.
+            - Persistent banner at bottom of SafeAreaView shows "إجمالي توفيرك مع 1PH1" + value in د.ع
+              + completed orders count. testID="cumulative-savings-banner" and testID="cumulative-savings-value".
+            - Per-supplier card now shows a green "توفير X%" pill computed from
+              (most_expensive_total - group.total)/most_expensive_total. testID="savings-pct-<supplier_id>".
+            - On commit, passes `savings_estimate_total` and `savings_per_group` to backend so commission
+              completion later credits the savings to the pharmacy.
+
+            Note for the testing agent: I just added the missing StyleSheet entries
+            (cumBanner, cumLabel, cumValue, cumSub, savePctPill, savePctTxt). Without them the
+            banner was rendering with undefined styles. Please verify the banner is visible and
+            styled (indigo background, white text) at the bottom of the screen, and that the
+            green pill appears under each supplier name.
 
 agent_communication:
     - agent: "main"

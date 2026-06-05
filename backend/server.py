@@ -1739,6 +1739,10 @@ class CommitGroup(BaseModel):
 class CommitOrderIn(BaseModel):
     commit_id: str  # client-generated UUID; idempotent
     groups: List[CommitGroup]
+    # Savings estimate distributed per group (worst_for_this_basket - actual_for_this_group).
+    # If provided, summed and stored per-order then added to pharmacy's cumulative_savings on completion.
+    savings_estimate_total: Optional[float] = None
+    savings_per_group: Optional[List[float]] = None
 
 
 @api_router.post("/orders/optimize/commit")
@@ -1769,9 +1773,19 @@ async def commit_order(data: CommitOrderIn, user: dict = Depends(require_role("p
 
     created = []
     now_iso = datetime.now(timezone.utc).isoformat()
-    for g in data.groups:
+    # Distribute savings_estimate across groups proportionally to group totals if not provided per-group
+    total_groups_value = sum(float(g.total or 0) for g in data.groups) or 1.0
+    sp_per_group = data.savings_per_group or []
+    saving_total = float(data.savings_estimate_total or 0)
+    for idx, g in enumerate(data.groups):
         if g.total <= 0:
             continue
+        if idx < len(sp_per_group):
+            saving_for_g = max(0.0, float(sp_per_group[idx] or 0))
+        elif saving_total > 0:
+            saving_for_g = round(saving_total * (float(g.total) / total_groups_value), 2)
+        else:
+            saving_for_g = 0.0
         order = {
             "id": str(uuid.uuid4()),
             "commit_id": data.commit_id,
@@ -1785,6 +1799,7 @@ async def commit_order(data: CommitOrderIn, user: dict = Depends(require_role("p
             "supplier_name": g.supplier_name,
             "items": [it.dict() for it in g.items],
             "total": float(g.total),
+            "savings_estimate": saving_for_g,
             "status": "pending",
             "source": "optimize",
             "rejection_reason": None,
@@ -1792,6 +1807,7 @@ async def commit_order(data: CommitOrderIn, user: dict = Depends(require_role("p
             "commission_rate": COMMISSION_RATE,
             "commission_id": None,
             "auto_completed": False,
+            "savings_credited": False,
             "created_at": now_iso,
             "accepted_at": None,
             "processing_at": None,
@@ -1800,7 +1816,7 @@ async def commit_order(data: CommitOrderIn, user: dict = Depends(require_role("p
             "rejected_at": None,
         }
         await db.orders.insert_one(order.copy())
-        created.append({"id": order["id"], "supplier_name": g.supplier_name, "total": order["total"]})
+        created.append({"id": order["id"], "supplier_name": g.supplier_name, "total": order["total"], "savings": saving_for_g})
     return {"status": "ok", "commit_id": data.commit_id, "created": len(created), "orders": created}
 
 
@@ -1861,7 +1877,6 @@ async def _complete_order(order: dict, actor: dict, auto: bool = False) -> dict:
     if order.get("status") == "completed":
         return order
     if order.get("status") != "delivered":
-        # Defensive: should not be called for orders not in delivered state
         return order
     now_iso = datetime.now(timezone.utc).isoformat()
     commission_rec = await _create_completion_commission(order, actor, auto=auto)
@@ -1875,8 +1890,35 @@ async def _complete_order(order: dict, actor: dict, auto: bool = False) -> dict:
             "commission_id": commission_rec["id"],
         }},
     )
+    # Credit pharmacy cumulative_savings (only if not already credited)
+    try:
+        savings = float(order.get("savings_estimate") or 0)
+        if savings > 0 and not order.get("savings_credited"):
+            await db.pharmacies.update_one(
+                {"id": order.get("pharmacy_id")},
+                {"$inc": {"cumulative_savings": savings},
+                 "$set": {"cumulative_savings_updated_at": now_iso}},
+            )
+            await db.orders.update_one({"id": order["id"]}, {"$set": {"savings_credited": True}})
+    except Exception:
+        logger.exception("Failed to credit pharmacy savings (non-fatal)")
     updated = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
     return updated or order
+
+
+@api_router.get("/pharmacy/savings")
+async def pharmacy_cumulative_savings(user: dict = Depends(require_role("pharmacy"))):
+    p = await db.pharmacies.find_one(
+        {"id": user["sub"]},
+        {"_id": 0, "cumulative_savings": 1, "cumulative_savings_updated_at": 1},
+    )
+    # Per-order count of completed orders (for context)
+    completed_count = await db.orders.count_documents({"pharmacy_id": user["sub"], "status": "completed"})
+    return {
+        "cumulative_savings": round(float((p or {}).get("cumulative_savings") or 0), 2),
+        "updated_at": (p or {}).get("cumulative_savings_updated_at"),
+        "completed_orders": completed_count,
+    }
 
 
 async def _maybe_auto_complete_delivered(filter_q: dict, actor: dict) -> int:

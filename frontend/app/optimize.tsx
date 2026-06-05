@@ -34,6 +34,8 @@ export default function Optimize() {
   const [tab, setTab] = useState<'split' | 'single'>('split');
   const [committed, setCommitted] = useState(false);
   const [committing, setCommitting] = useState(false);
+  const [cumulativeSavings, setCumulativeSavings] = useState<number | null>(null);
+  const [completedOrders, setCompletedOrders] = useState<number>(0);
   const commitIdRef = useRef<string>('');
 
   useEffect(() => {
@@ -46,11 +48,13 @@ export default function Optimize() {
           router.replace('/home');
           return;
         }
-        const res: OptimizeResult = await apiFetch('/orders/optimize', {
-          method: 'POST',
-          body: JSON.stringify({ items }),
-        }, token);
+        const [res, sav]: any = await Promise.all([
+          apiFetch('/orders/optimize', { method: 'POST', body: JSON.stringify({ items }) }, token),
+          apiFetch('/pharmacy/savings', {}, token).catch(() => ({ cumulative_savings: 0, completed_orders: 0 })),
+        ]);
         setResult(res);
+        setCumulativeSavings(sav?.cumulative_savings || 0);
+        setCompletedOrders(sav?.completed_orders || 0);
       } catch (e: any) {
         Alert.alert('خطأ', e.message || 'فشل التحليل');
         router.replace('/home');
@@ -83,6 +87,13 @@ export default function Optimize() {
             if (!commitIdRef.current) {
               commitIdRef.current = `c_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
             }
+            const worstTotal = result?.summary?.most_expensive_total || 0;
+            const actualTotal = groups.reduce((s, g) => s + g.total, 0);
+            // Distribute proportionally
+            const savings_total = Math.max(0, worstTotal - actualTotal);
+            const savings_per_group = groups.map(g => actualTotal > 0
+              ? Math.round((savings_total * g.total) / actualTotal)
+              : 0);
             const payload = {
               commit_id: commitIdRef.current,
               groups: groups.map(g => ({
@@ -91,6 +102,8 @@ export default function Optimize() {
                 total: g.total,
                 items: g.items.map(it => ({ name: it.name, quantity: it.quantity, unit_price: it.unit_price })),
               })),
+              savings_estimate_total: savings_total,
+              savings_per_group,
             };
             const res: any = await apiFetch('/orders/optimize/commit', { method: 'POST', body: JSON.stringify(payload) }, token);
             setCommitted(true);
@@ -187,18 +200,32 @@ export default function Optimize() {
             </View>
 
             {tab === 'split' ? (
-              <SplitView groups={split.groups} total={split.total} savings={split.savings_vs_max} onSend={sendWhatsApp} onCopy={() => copyAll(split.groups)} onConfirm={() => confirmOrder(split.groups)} committed={committed} committing={committing} />
+              <SplitView groups={split.groups} total={split.total} savings={split.savings_vs_max} maxTotal={summary.most_expensive_total} onSend={sendWhatsApp} onCopy={() => copyAll(split.groups)} onConfirm={() => confirmOrder(split.groups)} committed={committed} committing={committing} />
             ) : (
-              <SingleSupplierView options={single.options} onSend={sendWhatsApp} onConfirm={(g) => confirmOrder([g])} committed={committed} committing={committing} />
+              <SingleSupplierView options={single.options} maxTotal={summary.most_expensive_total} onSend={sendWhatsApp} onConfirm={(g) => confirmOrder([g])} committed={committed} committing={committing} />
             )}
           </>
         )}
       </ScrollView>
+
+      {/* Persistent cumulative savings banner (pharmacy-only) */}
+      {cumulativeSavings !== null && cumulativeSavings >= 0 && (
+        <View style={styles.cumBanner} testID="cumulative-savings-banner">
+          <Ionicons name="ribbon" size={20} color="#fff" />
+          <View style={{ flex: 1, alignItems: 'flex-end' }}>
+            <Text style={styles.cumLabel}>إجمالي توفيرك مع 1PH1</Text>
+            <Text style={styles.cumValue} testID="cumulative-savings-value">
+              {fmt(cumulativeSavings)} د.ع
+              {completedOrders > 0 ? <Text style={styles.cumSub}>  ({completedOrders} طلبية مكتملة)</Text> : null}
+            </Text>
+          </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
 
-function SplitView({ groups, total, savings, onSend, onCopy, onConfirm, committed, committing }: { groups: SupplierGroup[]; total: number; savings: number; onSend: (g: SupplierGroup) => void; onCopy: () => void; onConfirm: () => void; committed: boolean; committing: boolean }) {
+function SplitView({ groups, total, savings, maxTotal, onSend, onCopy, onConfirm, committed, committing }: { groups: SupplierGroup[]; total: number; savings: number; maxTotal: number; onSend: (g: SupplierGroup) => void; onCopy: () => void; onConfirm: () => void; committed: boolean; committing: boolean }) {
   if (!groups.length) return <Text style={styles.emptyTxt}>لا يوجد عرض تقسيم</Text>;
   return (
     <View style={{ gap: 12 }}>
@@ -223,13 +250,13 @@ function SplitView({ groups, total, savings, onSend, onCopy, onConfirm, committe
       </TouchableOpacity>
 
       {groups.map(g => (
-        <SupplierCard key={g.supplier_id} group={g} onSend={onSend} />
+        <SupplierCard key={g.supplier_id} group={g} onSend={onSend} maxTotal={maxTotal} />
       ))}
     </View>
   );
 }
 
-function SingleSupplierView({ options, onSend, onConfirm, committed, committing }: { options: SupplierGroup[]; onSend: (g: SupplierGroup) => void; onConfirm: (g: SupplierGroup) => void; committed: boolean; committing: boolean }) {
+function SingleSupplierView({ options, maxTotal, onSend, onConfirm, committed, committing }: { options: SupplierGroup[]; maxTotal: number; onSend: (g: SupplierGroup) => void; onConfirm: (g: SupplierGroup) => void; committed: boolean; committing: boolean }) {
   if (!options.length) {
     return (
       <View style={styles.empty}>
@@ -243,7 +270,7 @@ function SingleSupplierView({ options, onSend, onConfirm, committed, committing 
       {options.map((g, i) => (
         <View key={g.supplier_id}>
           {i === 0 && <View style={styles.bestBadge}><Ionicons name="star" size={12} color="#fff" /><Text style={styles.bestTxt}>الأرخص</Text></View>}
-          <SupplierCard group={g} onSend={onSend} highlight={i === 0} />
+          <SupplierCard group={g} onSend={onSend} highlight={i === 0} maxTotal={maxTotal} />
           {i === 0 && (
             <TouchableOpacity testID={`btn-confirm-single-${g.supplier_id}`} style={[styles.confirmBtn, { marginTop: 8 }, committed && styles.confirmedBtn]} onPress={() => onConfirm(g)} disabled={committed || committing}>
               {committing ? <ActivityIndicator color="#fff" /> : (
@@ -260,13 +287,20 @@ function SingleSupplierView({ options, onSend, onConfirm, committed, committing 
   );
 }
 
-function SupplierCard({ group, onSend, highlight }: { group: SupplierGroup; onSend: (g: SupplierGroup) => void; highlight?: boolean }) {
+function SupplierCard({ group, onSend, highlight, maxTotal }: { group: SupplierGroup; onSend: (g: SupplierGroup) => void; highlight?: boolean; maxTotal?: number }) {
+  const savePct = (maxTotal && maxTotal > group.total) ? Math.round(((maxTotal - group.total) / maxTotal) * 100) : 0;
   return (
     <View style={[styles.card, highlight && styles.cardHighlight]} testID={`supplier-card-${group.supplier_id}`}>
       <View style={styles.cardHead}>
         <View style={{ flex: 1, alignItems: 'flex-end' }}>
           <Text style={styles.supplierName}>{group.supplier_name}</Text>
           <Text style={styles.supplierTotal}>{fmt(group.total)} د.ع</Text>
+          {savePct > 0 && (
+            <View style={styles.savePctPill} testID={`savings-pct-${group.supplier_id}`}>
+              <Ionicons name="trending-down" size={11} color="#166534" />
+              <Text style={styles.savePctTxt}>توفير {savePct}%</Text>
+            </View>
+          )}
         </View>
         <View style={styles.supplierIcon}><Ionicons name="storefront" size={22} color={colors.indigo} /></View>
       </View>
@@ -335,4 +369,12 @@ const styles = StyleSheet.create({
   confirmBtn: { backgroundColor: colors.indigo, borderRadius: 14, paddingVertical: 14, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 8, shadowColor: colors.indigo, shadowOpacity: 0.25, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
   confirmedBtn: { backgroundColor: '#22c55e' },
   confirmTxt: { color: '#fff', fontWeight: '900', fontSize: 14 },
+  // Per-supplier savings percentage pill (green)
+  savePctPill: { flexDirection: 'row-reverse', alignItems: 'center', gap: 4, backgroundColor: '#dcfce7', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, marginTop: 4 },
+  savePctTxt: { color: '#166534', fontSize: 11, fontWeight: '800' },
+  // Persistent cumulative savings banner at the bottom of the screen
+  cumBanner: { flexDirection: 'row-reverse', alignItems: 'center', gap: 10, backgroundColor: colors.indigo, paddingHorizontal: 16, paddingVertical: 12, borderTopLeftRadius: 18, borderTopRightRadius: 18, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, shadowOffset: { width: 0, height: -2 }, elevation: 8 },
+  cumLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '600', textAlign: 'right' },
+  cumValue: { color: '#fff', fontWeight: '900', fontSize: 18, textAlign: 'right', marginTop: 2 },
+  cumSub: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '600' },
 });

@@ -1,0 +1,52 @@
+{
+  "summary": "End-to-end testing of the new Pharmacy Cumulative Savings feature. Wrote 13 backend tests in /app/backend/tests/test_pharmacy_savings.py covering: GET /api/pharmacy/savings shape + role enforcement (401/403/200), POST /api/orders/optimize/commit accepting savings_estimate_total + savings_per_group (with proportional distribution when per_group missing), backward compat (commit without savings -> savings_estimate=0, completion no-op on cumulative), manual confirm-receipt credits cumulative_savings exactly once + savings_credited flag prevents double-credit, second confirm-receipt returns 400 from lifecycle without re-credit, auto-complete path (delivered + 80h backdate -> auto credits exactly once via GET /api/supplier/orders), and regression on lifecycle role + pending-order redaction. Result: 13/13 PASS. Frontend tested via Playwright on mobile viewport (390x844): after Expo restart, banner [data-testid=cumulative-savings-banner] renders at bottom with indigo bg (rgb(99,102,241)) and white text showing live value '401 د.ع (2 طلبية مكتملة)' driven by real GET /api/pharmacy/savings response. Per-supplier pill correctly hidden when only one supplier exists (most_expensive_total == group.total). Critical operational note below.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/orders/optimize/commit", "issue": "Savings distribution rounds each group via round(x*ratio, 2) which can lose 0.01 د.ع from the sum vs savings_estimate_total when groups>2. Cumulative credit still matches per-order savings_estimate but the user-displayed banner can drift by pennies over many orders. Low priority."},
+      {"endpoint": "GET /api/pharmacy/savings", "issue": "completed_orders counts ALL pharmacy completed orders, including those created BEFORE the savings feature (which credited 0). UI label may mislead users into thinking each counted order contributed savings. Consider counting only orders where savings_credited=true."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Initial render of /optimize before Expo bundle picked up new code", "issue": "Stale Metro bundle was being served — `/api/pharmacy/savings` was NEVER called and banner did not render even though source had the code. After `sudo supervisorctl restart expo` the new optimize.tsx was rebundled and everything worked. Indicates Metro CI mode + lazy chunk cache may serve outdated bundles after on-disk edits. Main agent should always restart expo after editing screen files in CI mode.", "affected_testIDs": ["cumulative-savings-banner", "cumulative-savings-value"]}
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "optimize.tsx StyleSheet (cumBanner, savingsCard, confirmBtn)", "issue": "Uses shadow* style props (shadowColor/shadowOpacity/shadowRadius/shadowOffset) which RN Web logs 'shadow* style props are deprecated. Use boxShadow.' on every render. Migrate to `boxShadow` for web parity. Reference: /app/frontend/app/optimize.tsx:369,376 etc."},
+      {"component": "RN Web Alert.alert on /optimize confirm flow", "issue": "Alert.alert with 3 buttons does not surface as a window.confirm dialog nor a DOM-rendered modal that can be reliably clicked from Playwright on RN Web. End-users on web may see a non-styled prompt. Functional impact is minor (button works on native) but limits automated end-to-end verification of the commit payload from the browser. Reference: /app/frontend/app/optimize.tsx:78-122"}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pharmacy_savings.py",
+    "/app/test_reports/pytest/pytest_savings_results.xml"
+  ],
+  "action_items": [
+    "OPERATIONAL: After editing any screen .tsx in CI mode (Metro CI=true), run `sudo supervisorctl restart expo` — hot reload is disabled and lazy chunks may be cached. Without this, optimize.tsx changes (banner, savings call) silently do not ship.",
+    "Pre-existing test infra issue (NOT a regression from savings work): /app/backend/tests/test_pharmacy_api.py and /app/backend/tests/test_optimize.py supplier-register fixtures now fail at setup because POST /api/supplier/register requires a `region` field that the old payloads don't include. Cascades into 35 errors. Add `\"region\":\"بغداد\"` to those payloads.",
+    "Optional UX: Banner currently displays `cumulative_savings` rounded to integer via `Math.round` but completed_orders count includes legacy zero-savings orders. Consider showing only `savings_credited=true` count.",
+    "Optional: Migrate StyleSheet shadow* props to boxShadow in /app/frontend/app/optimize.tsx, /app/frontend/app/home.tsx and others to remove console warning noise.",
+    "Carry-over: split server.py (now 2364 lines) into routers/."
+  ],
+  "critical_code_review_comments": [
+    "Savings credit in _complete_order is correctly guarded by `not order.get('savings_credited')` and only fires when savings_estimate>0. The $inc + $set on pharmacies are in a single update_one call (atomic).",
+    "Auto-complete path runs inside `_maybe_auto_complete_delivered` which iterates and calls `_complete_order`. Each iteration re-reads the order document via cursor BEFORE the update, so two concurrent requests could in theory both observe savings_credited=false and both $inc. Race-window is tiny but consider doing the credit inside a conditional update_one({_id, savings_credited:{$ne:true}}) instead of separate read+update.",
+    "savings_estimate_total + savings_per_group are both Optional with no validation — clients can send savings_per_group longer than groups (extra entries ignored) or NEGATIVE values (max(0, ...) clamps them). Acceptable defensive code, but consider returning 400 on negative inputs to surface client bugs.",
+    "/api/pharmacy/savings returns updated_at as raw ISO string; frontend doesn't format it. Banner uses only the value. OK.",
+    "The frontend's proportional distribution `Math.round((savings_total * g.total) / actualTotal)` rounds to whole numbers (Math.round) while backend stores 2-decimal precision. Mismatch is sub-1 د.ع but inconsistent.",
+    "server.py grew to 2364 lines (was 1328 in prev iteration). Continues to need splitting into routers/."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pharmacy_savings.py (created, 13 tests, all pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 new savings tests pass). Pre-existing test_pharmacy_api/test_optimize/test_admin fixtures unrelated to this feature now fail due to a NEW required `region` field on POST /api/supplier/register — separate from savings work.",
+    "frontend": "100% on the testable surface (banner renders, indigo bg, correct value/count, savings GET fired correctly after Expo restart). Per-supplier pill correctly hidden in single-supplier scenario. Commit payload structure verified by source review + backend pytest (frontend wire capture blocked by RN Web Alert.alert dialog handling)."
+  },
+  "seed_data_creation": "Each test creates orders via the seeded pharmacy 07700000001 and seeded supplier 07811111111 (using `سب1` password), and cleans them up via direct mongo delete on (orders, supplier_sales). Some leftover credit on db.pharmacies.cumulative_savings (currently ~401 د.ع for the 07700000001 pharmacy) — main agent can reset via `mongosh pharmacy_db --eval 'db.pharmacies.updateOne({phone:\"07700000001\"},{\\$set:{cumulative_savings:0,cumulative_savings_updated_at:null}})'` if a clean banner is desired for demos.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: `EXPO_PUBLIC_BACKEND_URL=https://pharma-checkout-8.preview.emergentagent.com pytest /app/backend/tests/test_pharmacy_savings.py -v`. Tests are idempotent and self-cleaning. CRITICAL: If frontend changes touch optimize.tsx, ALWAYS `sudo supervisorctl restart expo` before browser testing — Metro is in CI mode (reloads disabled). The seeded pharmacy 07700000001 now has cumulative_savings≈401 — reset to 0 via mongosh if needed.",
+  "rca_of_issue": "Root cause analysis of the 'banner not rendering' bug observed mid-test: optimize.tsx in source contained both the savings GET and the banner JSX, but Metro was serving an OLD bundle without that code (verified by curl-ing the bundle URL and grepping for 'pharmacy/savings' -> 0 matches). Metro runs in CI mode (CI=true env var; see /var/log/supervisor/expo.out.log: 'Metro is running in CI mode, reloads are disabled.'). File system watch is disabled, so edits to optimize.tsx after the daemon started are NOT picked up. Fix: `sudo supervisorctl restart expo` rebuilt the bundle; the savings call then fired and the banner rendered with `rgb(99,102,241)` indigo background and '401 د.ع (2 طلبية مكتملة)' text. After restart everything works as designed. Main agent should add restart to its workflow after frontend screen edits."
+}
