@@ -20,7 +20,7 @@
       "versionCode": 2,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#080C1A"
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
@@ -46,7 +46,7 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 220,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
+          "backgroundColor": "#080C1A"
         }
       ],
       "expo-web-browser",
