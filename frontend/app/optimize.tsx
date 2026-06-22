@@ -77,7 +77,7 @@ export default function Optimize() {
     if (!groups || groups.length === 0) return;
     Alert.alert(
       'تثبيت الطلبية',
-      `سيتم إرسال طلبية لكل مذخر (${groups.length}). المذاخر ستحتاج لقبول الطلبية أولاً، ثم تجهيزها وتوصيلها. تأكد من الاستلام لتفعيل احتساب العمولة (4%) عند إكمال الطلبية. هل تريد المتابعة؟`,
+      `سيتم إرسال طلبية لكل مذخر (${groups.length}). المذاخر ستحتاج لقبول الطلبية أولاً، ثم تجهيزها وتوصيلها. هل تريد المتابعة؟`,
       [
         { text: 'إلغاء', style: 'cancel' },
         { text: 'تأكيد الطلب', style: 'default', onPress: async () => {
@@ -113,7 +113,20 @@ export default function Optimize() {
               [{ text: 'عرض طلبياتي', onPress: () => router.replace('/pharmacy-orders' as any) }],
             );
           } catch (e: any) {
-            Alert.alert('خطأ', e.message || 'فشل التثبيت');
+            if (e?.status === 409) {
+              // Mandatory receipt enforcement — educational redirect to "My Orders"
+              Alert.alert(
+                '⚠️ تأكيد الاستلام مطلوب',
+                e.message || 'يجب تأكيد استلام الطلبيات السابقة قبل إنشاء طلبية جديدة.',
+                [
+                  { text: 'لاحقاً', style: 'cancel' },
+                  { text: 'الذهاب إلى طلباتي', style: 'default',
+                    onPress: () => router.push('/pharmacy-orders' as any) },
+                ],
+              );
+            } else {
+              Alert.alert('خطأ', e.message || 'فشل التثبيت');
+            }
           } finally {
             setCommitting(false);
           }
@@ -239,7 +252,7 @@ function SplitView({ groups, total, savings, maxTotal, onSend, onCopy, onConfirm
         {committing ? <ActivityIndicator color="#fff" /> : (
           <>
             <Ionicons name={committed ? 'checkmark-done' : 'lock-closed'} size={18} color="#fff" />
-            <Text style={styles.confirmTxt}>{committed ? 'تم التثبيت ✓' : 'تثبيت الطلبية وحساب العمولة'}</Text>
+            <Text style={styles.confirmTxt}>{committed ? 'تم التثبيت ✓' : 'تثبيت الطلبية'}</Text>
           </>
         )}
       </TouchableOpacity>

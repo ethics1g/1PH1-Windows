@@ -1760,6 +1760,23 @@ async def commit_order(data: CommitOrderIn, user: dict = Depends(require_role("p
     if existing > 0:
         return {"status": "already_committed", "commit_id": data.commit_id, "created": 0}
 
+    # === Pending-receipt enforcement (mandatory receipt confirmation) ===
+    # Pharmacy may not create new orders if 2 or more of their existing orders are in
+    # 'delivered' status awaiting their action (must click "received" or "not received").
+    pending_receipt_count = await db.orders.count_documents({
+        "pharmacy_id": user["sub"],
+        "status": "delivered",
+    })
+    if pending_receipt_count >= 2:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "لا يمكن إنشاء طلبية جديدة قبل تأكيد استلام طلبياتك السابقة. "
+                "يوجد لديك {n} طلبيات تم تسليمها وتنتظر إجراءك. "
+                "يرجى الذهاب إلى \"طلباتي\" والضغط على \"تأكيد الاستلام\" أو \"لم أستلم الطلبية\" لكل منها."
+            ).format(n=pending_receipt_count),
+        )
+
     pharmacy = await db.pharmacies.find_one({"id": user["sub"]}, {"_id": 0})
     if not pharmacy:
         raise HTTPException(status_code=404, detail="Pharmacy not found")
@@ -2035,6 +2052,47 @@ async def pharmacy_confirm_receipt(order_id: str, user: dict = Depends(require_r
     return {"status": "ok", "order_status": "completed",
             "commission_amount": updated.get("commission_amount"),
             "commission_id": updated.get("commission_id")}
+
+
+class RejectReceiptIn(BaseModel):
+    reason: Optional[str] = None
+
+
+@api_router.patch("/pharmacy/orders/{order_id}/reject-receipt")
+async def pharmacy_reject_receipt(order_id: str,
+                                  data: Optional[RejectReceiptIn] = None,
+                                  user: dict = Depends(require_role("pharmacy"))):
+    """Pharmacy reports they did NOT receive a delivered order.
+    Terminal transition: delivered -> not_received. No commission/savings credited.
+    """
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="الطلبية غير موجودة")
+    if order.get("pharmacy_id") != user["sub"]:
+        raise HTTPException(status_code=403, detail="ليست طلبيتك")
+    if order.get("status") != "delivered":
+        raise HTTPException(status_code=400, detail=f"لا يمكن الإبلاغ. الحالة: {order.get('status')}")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    reason = (data.reason if data else None) or "لم يتم الاستلام"
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "status": "not_received",
+            "not_received_at": now_iso,
+            "not_received_reason": reason[:500],
+            "savings_credited": False,
+        }},
+    )
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "order_not_received",
+        "actor": {"id": user["sub"], "role": "pharmacy"},
+        "target": {"order_id": order_id, "supplier_id": order.get("supplier_id")},
+        "meta": {"reason": reason[:500]},
+        "timestamp": now_iso,
+    })
+    return {"status": "ok", "order_status": "not_received"}
 
 
 # Pharmacy: view own orders (already exists at /orders; we replace with richer version)

@@ -11,12 +11,13 @@ import { colors } from '../src/theme';
 import ScreenHeader from '../src/ScreenHeader';
 
 const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
-  pending:    { label: 'بانتظار القبول',  color: '#92400e', bg: '#fef3c7' },
-  accepted:   { label: 'مقبولة',          color: '#1e40af', bg: '#dbeafe' },
-  processing: { label: 'قيد التجهيز',     color: '#7c3aed', bg: '#ede9fe' },
-  delivered:  { label: 'تم التسليم',      color: '#0e7490', bg: '#cffafe' },
-  completed:  { label: 'مكتملة',          color: '#166534', bg: '#dcfce7' },
-  rejected:   { label: 'مرفوضة',          color: '#991b1b', bg: '#fee2e2' },
+  pending:      { label: 'بانتظار القبول',  color: '#92400e', bg: '#fef3c7' },
+  accepted:     { label: 'مقبولة',          color: '#1e40af', bg: '#dbeafe' },
+  processing:   { label: 'قيد التجهيز',     color: '#7c3aed', bg: '#ede9fe' },
+  delivered:    { label: 'تم التسليم',      color: '#0e7490', bg: '#cffafe' },
+  completed:    { label: 'مكتملة',          color: '#166534', bg: '#dcfce7' },
+  rejected:     { label: 'مرفوضة',          color: '#991b1b', bg: '#fee2e2' },
+  not_received: { label: 'لم تُستلم',       color: '#9a3412', bg: '#ffedd5' },
 };
 const FILTERS: Array<{ key: string; label: string }> = [
   { key: 'all', label: 'الكل' },
@@ -25,6 +26,7 @@ const FILTERS: Array<{ key: string; label: string }> = [
   { key: 'processing', label: 'قيد التجهيز' },
   { key: 'delivered', label: 'تم التسليم' },
   { key: 'completed', label: 'مكتملة' },
+  { key: 'not_received', label: 'لم تُستلم' },
   { key: 'rejected', label: 'مرفوضة' },
 ];
 
@@ -62,6 +64,29 @@ export default function PharmacyOrders() {
         finally { setBusy(null); }
       }},
     ]);
+  };
+
+  const rejectReceipt = async (o: any) => {
+    Alert.alert(
+      'لم أستلم الطلبية',
+      `هل أنت متأكد أنك لم تستلم الطلبية من ${o.supplier_name}؟ لن يتم احتساب عمولة وسيتم إعلام المذخر بذلك.`,
+      [
+        { text: 'إلغاء', style: 'cancel' },
+        { text: 'نعم، لم أستلمها', style: 'destructive', onPress: async () => {
+          setBusy(o.id);
+          try {
+            await apiFetch(
+              `/pharmacy/orders/${o.id}/reject-receipt`,
+              { method: 'PATCH', body: JSON.stringify({ reason: 'لم تصلني الطلبية من المذخر' }) },
+              token,
+            );
+            Alert.alert('تم التسجيل', 'تم تسجيل عدم استلام الطلبية. لن يتم احتساب عمولة.');
+            await load();
+          } catch (e: any) { Alert.alert('خطأ', e.message); }
+          finally { setBusy(null); }
+        }},
+      ],
+    );
   };
 
   const callSupplier = (phone?: string) => {
@@ -122,19 +147,28 @@ export default function PharmacyOrders() {
               {o.status === 'rejected' && o.rejection_reason ? (
                 <Text style={styles.rejReason}>سبب الرفض: {o.rejection_reason}</Text>
               ) : null}
+              {o.status === 'not_received' && o.not_received_reason ? (
+                <Text style={styles.rejReason}>تم الإبلاغ عن عدم الاستلام</Text>
+              ) : null}
               {o.status === 'completed' && o.auto_completed ? (
                 <Text style={styles.muted}>تم الإكمال تلقائياً بعد 72 ساعة</Text>
               ) : null}
 
               {o.status === 'delivered' ? (
-                <TouchableOpacity testID={`btn-confirm-${o.id}`} style={[styles.actionBtn, styles.successBtn]} onPress={() => confirmReceipt(o)} disabled={busy === o.id}>
-                  {busy === o.id ? <ActivityIndicator color="#fff" /> : (
-                    <>
-                      <Ionicons name="checkmark-done-circle" size={18} color="#fff" />
-                      <Text style={styles.actionTxt}>تأكيد الاستلام</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
+                <View style={{ gap: 8 }}>
+                  <TouchableOpacity testID={`btn-confirm-${o.id}`} style={[styles.actionBtn, styles.successBtn]} onPress={() => confirmReceipt(o)} disabled={busy === o.id}>
+                    {busy === o.id ? <ActivityIndicator color="#fff" /> : (
+                      <>
+                        <Ionicons name="checkmark-done-circle" size={18} color="#fff" />
+                        <Text style={styles.actionTxt}>تأكيد الاستلام</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity testID={`btn-reject-${o.id}`} style={[styles.actionBtn, styles.dangerBtn]} onPress={() => rejectReceipt(o)} disabled={busy === o.id}>
+                    <Ionicons name="close-circle" size={18} color="#fff" />
+                    <Text style={styles.actionTxt}>لم أستلم الطلبية</Text>
+                  </TouchableOpacity>
+                </View>
               ) : null}
             </View>
           );
@@ -167,6 +201,7 @@ const styles = StyleSheet.create({
   rejReason: { fontSize: 12, color: '#991b1b', backgroundColor: '#fee2e2', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, textAlign: 'right' },
   actionBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, borderRadius: 10 },
   successBtn: { backgroundColor: '#16a34a' },
+  dangerBtn: { backgroundColor: '#dc2626' },
   actionTxt: { color: '#fff', fontWeight: '800', fontSize: 13 },
   muted: { fontSize: 11, color: colors.textMuted, textAlign: 'center', padding: 4 },
   empty: { textAlign: 'center', color: colors.textMuted, padding: 40 },

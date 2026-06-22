@@ -89,7 +89,10 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {},
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
     const msg = (data && data.detail) || `خطأ ${res.status}`;
-    throw new Error(typeof msg === 'string' ? msg : 'خطأ');
+    const err: any = new Error(typeof msg === 'string' ? msg : 'خطأ');
+    err.status = res.status;
+    err.detail = data?.detail;
+    throw err;
   }
   return data as T;
 }

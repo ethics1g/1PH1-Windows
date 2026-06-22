@@ -1,0 +1,56 @@
+{
+  "summary": "End-to-end testing of the Mandatory Receipt Confirmation feature. Backend: created /app/backend/tests/test_pharmacy_receipt_enforcement.py with 16 pytest tests across 5 classes covering: (a) new PATCH /api/pharmacy/orders/{id}/reject-receipt — 404/403/400/role-required, delivered→not_received with reason persistence, NO commission, NO savings credit, body is optional. (b) commit_order pending-receipt enforcement — 0 pending → 200, 1 pending → 200, 2 pending → 409 with Arabic detail containing all 3 phrases ('طلباتي', 'تأكيد الاستلام', 'لم أستلم الطلبية'), recovery after confirm-receipt and after reject-receipt. (c) not_received is TERMINAL — supplier accept/processing/delivered/reject all return 400; confirm-receipt also returns 400; auto-complete with 80h backdate does NOT mutate not_received. (d) Backward compat — confirm-receipt still credits 4% commission and cumulative_savings exactly once; second confirm returns 400 with no double-credit. (e) Regression on role enforcement. Result: 16/16 PASS. Pre-existing test_pharmacy_savings.py still 13/13 PASS — no regression. Frontend: with mobile viewport (390x844), logged in as pharmacy 07700000001, created delivered orders via direct API (bypassing brittle Alert.alert flow on RN Web), navigated /pharmacy-orders → confirmed flt-not_received tab exists with label 'لم تُستلم', confirmed both btn-confirm-{id} ('تأكيد الاستلام', green rgb(22,163,74)) and btn-reject-{id} ('لم أستلم الطلبية', red rgb(220,38,38)) render on a delivered order, after reject-receipt the order moves to not_received pill 'لم تُستلم' (orange #ffedd5/#9a3412) and BOTH action buttons disappear (terminal state). Verified the 409 commit response via fetch contains all 3 Arabic keywords. Source verified: optimize.tsx confirm dialog title 'تثبيت الطلبية' and message 'سيتم إرسال طلبية لكل مذخر ... هل تريد المتابعة؟' contains NO mention of العمولة / 4% / commission; commit button text exactly 'تثبيت الطلبية'; 409 branch shows Alert with title '⚠️ تأكيد الاستلام مطلوب' and button 'الذهاب إلى طلباتي' routing to /pharmacy-orders. apiFetch correctly attaches err.status=409 and err.detail. The feature is fully working end-to-end.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PATCH /api/pharmacy/orders/{id}/reject-receipt", "issue": "On reject, the handler sets savings_credited:false. Combined with status=not_received this is harmless (status check guards), but if any future code path inadvertently retreats not_received → delivered → completed, savings could be credited (since savings_credited was reset). Defensive but minor. Reference: backend/server.py:2084."},
+      {"endpoint": "POST /api/orders/optimize/commit", "issue": "Pending-receipt count is computed BEFORE the idempotency short-circuit response... wait it is AFTER (line 1759 idempotency check then line 1766 count). OK. But the count uses status='delivered' only; orders in 'accepted'/'processing' are not counted, so a pharmacy can stack many in-flight orders. Not a bug per spec ('delivered awaiting their action') — confirming current behavior intentional."},
+      {"endpoint": "PATCH /pharmacy/orders/{id}/reject-receipt", "issue": "No audit log includes savings_estimate that was forfeited; only the reason. For BI/reporting on lost savings consider adding meta.savings_forfeited. Optional."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/pharmacy-orders", "issues": ["Reject button is destructive red (#dc2626) and immediately follows the green confirm button with only 8px gap; consider adding a divider or making the destructive style slightly less prominent (outline-only) to avoid accidental taps on mobile. Touch targets are 44px+ so accessibility is fine."]}
+    ],
+    "react_native_issues": [
+      {"component": "optimize.tsx & pharmacy-orders.tsx StyleSheet", "issue": "RN Web logs 'shadow* style props are deprecated. Use boxShadow.' on every render. Same warning reported in iteration_6 — not yet migrated. Reference: /app/frontend/app/optimize.tsx (cumBanner, savingsCard, confirmBtn) and other screens."},
+      {"component": "Multiple screens", "issue": "RN Web logs 'props.pointerEvents is deprecated. Use style.pointerEvents'. Low severity but pollutes console."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pharmacy_receipt_enforcement.py",
+    "/app/test_reports/pytest/pytest_receipt_results.xml"
+  ],
+  "action_items": [
+    "(Optional, cosmetic) Migrate shadow* StyleSheet props to boxShadow in /app/frontend/app/optimize.tsx, home.tsx, and pharmacy-orders.tsx (or any common style module) to silence RN Web warnings.",
+    "(Optional, robustness) Inside _maybe_auto_complete_delivered, query filter already restricts to status='delivered', so not_received is naturally skipped — no change needed. Confirmed in code review.",
+    "(Optional, UX) Reject button on /pharmacy-orders could use outline-only or a confirmation icon to differentiate further from the green confirm button. Current rendering is functional and accessible.",
+    "(Pre-existing carry-over) Split server.py — now 2421 lines — into routers/ for maintainability."
+  ],
+  "critical_code_review_comments": [
+    "pharmacy_reject_receipt correctly enforces ownership (403) and status=='delivered' (400). The transition sets not_received_at, not_received_reason (capped 500 chars), and writes an audit log. No commission_record is created and no $inc on pharmacies.cumulative_savings — the test verifies this explicitly.",
+    "commit_order pending-receipt counter uses count_documents — fine for current scale but could be replaced with an indexed query (orders has index on (pharmacy_id, status) presumably). The threshold is the literal integer 2, matching the spec ('3rd new commit while 2 are pending is blocked').",
+    "The 409 detail string is built with .format(n=pending_receipt_count) — Python f-string concatenation across multiple lines is fine. All three required phrases ('طلباتي', 'تأكيد الاستلام', 'لم أستلم الطلبية') are present in the literal.",
+    "_complete_order returns early if status != 'delivered' — so confirm-receipt on a not_received order short-circuits inside _complete_order (after the lifecycle 400 in pharmacy_confirm_receipt). Defensive and idempotent.",
+    "auth.tsx apiFetch correctly attaches err.status and err.detail; the frontend Alert branching on e?.status === 409 is the right pattern.",
+    "Reject button style {backgroundColor:'#dc2626'} is destructive and Alert.alert with 'destructive' style on iOS will render red text — good UX cue.",
+    "STATUS_META.not_received uses orange bg (#ffedd5) and dark orange text (#9a3412) — sufficient contrast (WCAG AA passes).",
+    "Pending-receipt count does not consider supplier_id, so a pharmacy with 2 delivered orders from supplier A is also blocked from ordering from supplier B. This is correct per spec but worth noting if multi-tenant expansion happens.",
+    "RejectReceiptIn is Optional[Body] — FastAPI gracefully accepts PATCH with no body. Verified by test_reject_without_body.",
+    "server.py is now 2421 lines — over the 700-line threshold from code review guidelines."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pharmacy_receipt_enforcement.py (NEW — 16 tests, all pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 new receipt tests pass + 13/13 prior savings tests pass)",
+    "frontend": "100% on testable surface (filter tab, both action buttons, terminal pill, 409 status & detail content all verified). Alert.alert UI flow not directly clicked via Playwright on RN Web due to native modal limitations — instead the underlying API and component contract were verified, source strings inspected, and the 409 error attachment by apiFetch was confirmed at the network layer."
+  },
+  "seed_data_creation": "Tests create TEST_ prefixed orders via the seeded pharmacy 07700000001 and seeded supplier 07811111111, then either complete them (confirm-receipt) or reject them (reject-receipt -> not_received). An autouse fixture force-resolves any pre-existing 'delivered' orders to 'completed' before each test to isolate the pending-receipt counter, and removes TEST_ orders after. Side effect: cumulative_savings on the seeded pharmacy increased by ~17 د.ع due to TestConfirmReceiptRegression — reset via mongosh if needed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: `EXPO_PUBLIC_BACKEND_URL=https://pharma-checkout-8.preview.emergentagent.com pytest /app/backend/tests/test_pharmacy_receipt_enforcement.py -v` and /app/backend/tests/test_pharmacy_savings.py — both are idempotent. The autouse fixture clears 'delivered' state per-test, so they are safe to rerun. Frontend testing of Alert.alert on RN Web is unreliable; prefer source verification + direct API calls via page.evaluate(fetch). The 'لم تُستلم' filter and both action buttons on a delivered card have testIDs `flt-not_received`, `btn-confirm-{order_id}`, `btn-reject-{order_id}`.",
+  "rca_of_issue": "No bug to RCA — feature works as designed. Two minor friction points encountered during testing: (1) The login screen's role buttons are NOT present in 'login' mode (only 'register' mode), so testID role-pharmacy is unfindable when mode=login. Workaround: skip the role click in login flow. (2) Alert.alert on RN Web does not surface a clickable DOM element reliably from Playwright; the workaround was to verify Alert source strings + call the underlying API via page.evaluate(fetch) to assert the 409 contract, which is what the UI relies on."
+}
