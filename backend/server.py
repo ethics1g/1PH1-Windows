@@ -690,23 +690,59 @@ async def sell_medicines(data: SellRequest, user: dict = Depends(require_role("p
 
 
 def _parse_expiry(v: Optional[str]) -> Optional[str]:
-    """Validate and normalize an expiry date string to 'YYYY-MM-DD'. Accepts 'YYYY-MM' too."""
+    """Validate and normalize an expiry date string to 'YYYY-MM-DD'.
+
+    Accepts a flexible set of inputs and normalizes them all to canonical
+    'YYYY-MM-DD'. Supported shapes (separators may be '-', '/', '.', or '\\'):
+        2027-04-01, 2027-4-1, 2027/4/1
+        01-04-2027, 1/4/2027 (day-month-year)
+        2027-04, 2027/4    (year-month  → day = 01)
+        04-2027            (month-year  → day = 01)
+    Arabic-Indic digits (٠-٩) are converted to ASCII before parsing.
+    """
     if not v:
         return None
     s = str(v).strip()
     if not s:
         return None
-    if len(s) == 7 and s[4] == "-":
-        try:
-            datetime.strptime(s + "-01", "%Y-%m-%d")
-            return s + "-01"
-        except Exception:
-            raise HTTPException(status_code=400, detail="تاريخ انتهاء غير صالح")
+    # Arabic-Indic → ASCII
+    s = "".join(
+        chr(ord(c) - 0x0660 + ord("0")) if "\u0660" <= c <= "\u0669"
+        else chr(ord(c) - 0x06F0 + ord("0")) if "\u06F0" <= c <= "\u06F9"
+        else c
+        for c in s
+    )
+    parts = [p for p in re.split(r"[-/.\\]", s) if p != ""]
+    if len(parts) < 2 or len(parts) > 3 or not all(p.isdigit() for p in parts):
+        raise HTTPException(status_code=400, detail="تاريخ انتهاء غير صالح (مثال: 2027-04-01)")
+
     try:
-        datetime.strptime(s, "%Y-%m-%d")
-        return s
+        if len(parts[0]) == 4:
+            y = int(parts[0])
+            m = int(parts[1])
+            d = int(parts[2]) if len(parts) == 3 else 1
+        elif len(parts[-1]) == 4:
+            if len(parts) == 2:
+                # M-YYYY
+                m = int(parts[0])
+                y = int(parts[1])
+                d = 1
+            else:
+                d = int(parts[0])
+                m = int(parts[1])
+                y = int(parts[2])
+        else:
+            raise HTTPException(status_code=400, detail="يرجى إدخال السنة بأربعة أرقام (مثال: 2027)")
+
+        if not (1900 <= y <= 2100) or not (1 <= m <= 12) or not (1 <= d <= 31):
+            raise HTTPException(status_code=400, detail=f"تاريخ غير صالح: {y}-{m}-{d}")
+        dt = datetime(y, m, d)  # calendar-valid check (raises ValueError on 31-Feb etc.)
+    except HTTPException:
+        raise
     except Exception:
-        raise HTTPException(status_code=400, detail="تاريخ انتهاء غير صالح (الصيغة: YYYY-MM-DD)")
+        raise HTTPException(status_code=400, detail="تاريخ انتهاء غير صالح")
+
+    return dt.strftime("%Y-%m-%d")
 
 
 def _expiry_status(expiry_date: Optional[str]) -> dict:

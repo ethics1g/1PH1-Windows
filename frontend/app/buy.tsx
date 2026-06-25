@@ -9,6 +9,8 @@ import { useAuth, apiFetch } from '../src/auth';
 import { colors } from '../src/theme';
 import ScreenHeader from '../src/ScreenHeader';
 import MedicineScanner from '../src/MedicineScanner';
+import ExpiryDateField from '../src/ExpiryDateField';
+import { normalizeExpiryDate } from '../src/utils/dateUtils';
 
 export default function Buy() {
   const { token } = useAuth();
@@ -65,13 +67,13 @@ export default function Buy() {
       Alert.alert('تنبيه', 'تاريخ انتهاء الصلاحية مطلوب');
       return;
     }
-    // Validate date format YYYY-MM-DD or YYYY-MM
-    const fullRe = /^\d{4}-\d{2}-\d{2}$/;
-    const monthRe = /^\d{4}-\d{2}$/;
-    if (!fullRe.test(expiryDate.trim()) && !monthRe.test(expiryDate.trim())) {
-      Alert.alert('تنبيه', 'صيغة التاريخ يجب أن تكون YYYY-MM-DD (مثل 2027-12-31)');
+    // Flexible parse: accept 2027-4-1, 1/4/2027, 01-04-2027 etc.
+    const parsed = normalizeExpiryDate(expiryDate);
+    if (!parsed.ok) {
+      Alert.alert('تنبيه', parsed.error);
       return;
     }
+    const normalized = parsed.value;
     setBusy(true);
     try {
       await apiFetch('/medicines/buy', {
@@ -81,7 +83,7 @@ export default function Buy() {
           barcode: barcode.trim() || null,
           quantity: parseInt(quantity) || 0,
           price: parseFloat(price) || 0,
-          expiry_date: expiryDate.trim(),
+          expiry_date: normalized,
           image_base64: image,
         }),
       }, token);
@@ -121,21 +123,12 @@ export default function Buy() {
             </View>
           </View>
 
-          <View style={styles.field}>
-            <Text style={styles.label}>تاريخ انتهاء الصلاحية * (YYYY-MM-DD)</Text>
-            <TextInput
-              testID="buy-expiry"
-              style={styles.input}
-              value={expiryDate}
-              onChangeText={setExpiryDate}
-              placeholder="مثال: 2027-12-31"
-              placeholderTextColor={colors.textMuted}
-              keyboardType="numbers-and-punctuation"
-              textAlign="right"
-              maxLength={10}
-            />
-            <Text style={styles.hint}>تنبيهات تلقائية: 90 يوم · 30 يوم · 7 أيام · منتهي</Text>
-          </View>
+          <ExpiryDateField
+            value={expiryDate}
+            onChange={setExpiryDate}
+            testID="buy-expiry"
+          />
+          <Text style={styles.hint}>تنبيهات تلقائية: 90 يوم · 30 يوم · 7 أيام · منتهي</Text>
 
           <TouchableOpacity
             testID="btn-save-buy"
