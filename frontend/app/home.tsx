@@ -21,6 +21,8 @@ const tiles: Tile[] = [
   { key: 'sell', title: 'البيع', subtitle: 'مسح الباركود والبيع السريع', icon: 'cart', bg: '#dcfce7', iconColor: '#16a34a', route: '/sell', testID: 'tile-sell' },
   { key: 'buy', title: 'الشراء', subtitle: 'إضافة الأدوية للمخزن', icon: 'cube', bg: '#e0f2fe', iconColor: '#0284c7', route: '/buy', testID: 'tile-buy' },
   { key: 'inventory', title: 'المخزن', subtitle: 'عرض وإدارة المخزون', icon: 'file-tray-stacked', bg: '#fef3c7', iconColor: '#d97706', route: '/inventory', testID: 'tile-inventory' },
+  { key: 'accounting', title: 'المحاسبة', subtitle: 'الأرباح والمخزون والديون', icon: 'calculator', bg: '#f3e8ff', iconColor: '#9333ea', route: '/accounting', testID: 'tile-accounting' },
+  { key: 'customers', title: 'ديون الزبائن', subtitle: 'إدارة الديون واستلام الدفعات', icon: 'people', bg: '#ffedd5', iconColor: '#ea580c', route: '/customers', testID: 'tile-customers' },
   { key: 'suppliers', title: 'المذاخر', subtitle: 'متجر الموردين', icon: 'storefront', bg: '#eef2ff', iconColor: '#6366f1', route: '/suppliers', testID: 'tile-suppliers' },
   { key: 'orders', title: 'طلبياتي', subtitle: 'تتبع الطلبيات وتأكيد الاستلام', icon: 'receipt', bg: '#fce7f3', iconColor: '#be185d', route: '/pharmacy-orders', testID: 'tile-orders' },
 ];

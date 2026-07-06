@@ -95,6 +95,9 @@ export default function RootLayout() {
           <Stack.Screen name="settings/password" />
           <Stack.Screen name="settings/notifications" />
           <Stack.Screen name="medicines/expired" />
+          <Stack.Screen name="accounting/index" />
+          <Stack.Screen name="customers/index" />
+          <Stack.Screen name="customers/[id]" />
         </Stack>
       </AuthProvider>
     </SafeAreaProvider>

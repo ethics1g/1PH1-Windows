@@ -1378,6 +1378,12 @@ notif_mod.init(db, require_role, hash_password, verify_password)
 notif_mod.install_routes(require_role)
 app.include_router(notif_mod.router_notifications)
 
+# ============== Accounting Module (profit/debts/customers) ==============
+import accounting as acc_mod  # noqa: E402
+acc_mod.init(db, require_role)
+acc_mod.install_routes(require_role)
+app.include_router(acc_mod.router_accounting)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
