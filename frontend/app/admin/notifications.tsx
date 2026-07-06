@@ -12,13 +12,13 @@ import { apiFetch, useAuth } from '../../src/auth';
 type Audience = 'all' | 'role' | 'region' | 'ids';
 
 export default function AdminNotifications() {
-  const { token, user, role } = useAuth();
-  const isAdmin = role === 'admin';
+  const { token, user, role: myRole } = useAuth();
+  const isAdmin = myRole === 'admin';
 
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [audience, setAudience] = useState<Audience>('all');
-  const [role, setRole] = useState('pharmacy');
+  const [audienceRole, setAudienceRole] = useState('pharmacy');
   const [region, setRegion] = useState('');
   const [ids, setIds] = useState('');
   const [scheduled, setScheduled] = useState<Date | null>(null);
@@ -47,7 +47,7 @@ export default function AdminNotifications() {
   const send = async () => {
     if (!title.trim() || !body.trim()) { Alert.alert('تنبيه', 'العنوان والنص مطلوبان'); return; }
     const payload: any = { title: title.trim(), body: body.trim(), audience_mode: audience };
-    if (audience === 'role') payload.role = role;
+    if (audience === 'role') payload.role = audienceRole;
     if (audience === 'region') payload.region = region.trim();
     if (audience === 'ids') payload.ids = ids.split(/[,\s]+/).filter(Boolean);
     if (scheduled) payload.scheduled_for = scheduled.toISOString();
@@ -127,8 +127,8 @@ export default function AdminNotifications() {
             <Text style={styles.label}>اختر الدور</Text>
             <View style={styles.pillRow}>
               {[['pharmacy', 'صيدليات'], ['supplier', 'مذاخر'], ['admin', 'مسؤولون']].map(([k, lbl]) => (
-                <TouchableOpacity key={k} testID={`role-${k}`} onPress={() => setRole(k)} style={[styles.pill, role === k && styles.pillActive]}>
-                  <Text style={[styles.pillTxt, role === k && styles.pillTxtActive]}>{lbl}</Text>
+                <TouchableOpacity key={k} testID={`role-${k}`} onPress={() => setAudienceRole(k)} style={[styles.pill, audienceRole === k && styles.pillActive]}>
+                  <Text style={[styles.pillTxt, audienceRole === k && styles.pillTxtActive]}>{lbl}</Text>
                 </TouchableOpacity>
               ))}
             </View>

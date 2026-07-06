@@ -21,7 +21,7 @@ type Item = {
 
 export default function AppDrawer({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const router = useRouter();
-  const { user, signOut } = useAuth();
+  const { user, role, signOut } = useAuth();
   const slide = useRef(new Animated.Value(1)).current; // 1=hidden(right), 0=visible
 
   useEffect(() => {
@@ -80,7 +80,7 @@ export default function AppDrawer({ visible, onClose }: { visible: boolean; onCl
 
           <ScrollView contentContainerStyle={{ paddingVertical: 8 }}>
             {items
-              .filter((it) => !it.adminOnly || user?.role === 'admin')
+              .filter((it) => !it.adminOnly || role === 'admin')
               .map((it) => (
               <TouchableOpacity
                 key={it.testID}
