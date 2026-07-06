@@ -38,6 +38,13 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 
+def verify_password(plain: str, hashed: str) -> bool:
+    """Timing-safe password verification against a sha256 hash."""
+    if not plain or not hashed:
+        return False
+    return hash_password(plain) == hashed
+
+
 def create_token(user_id: str, role: str) -> str:
     payload = {
         "sub": user_id,
@@ -64,6 +71,8 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
 
 def require_role(required_role: str):
     async def _dep(user: dict = Depends(get_current_user)) -> dict:
+        if required_role == "any":
+            return user
         if user.get("role") != required_role:
             raise HTTPException(status_code=403, detail="Forbidden")
         return user
@@ -1363,6 +1372,12 @@ async def publish_job(job_id: str, user: dict = Depends(require_role("supplier")
 
 app.include_router(api_router)
 
+# ============== Notifications & Account Management ==============
+import notifications as notif_mod  # noqa: E402
+notif_mod.init(db, require_role, hash_password, verify_password)
+notif_mod.install_routes(require_role)
+app.include_router(notif_mod.router_notifications)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -1374,7 +1389,22 @@ app.add_middleware(
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    try:
+        notif_mod.stop_scheduler()
+    except Exception:
+        pass
     client.close()
+
+
+@app.on_event("startup")
+async def start_notification_scheduler():
+    """Start the notifications scheduler and restore any pending scheduled batches."""
+    try:
+        notif_mod.start_scheduler()
+        await notif_mod.restore_scheduled()
+        logger.info("Notification scheduler ready")
+    except Exception:
+        logger.exception("Failed to start notification scheduler")
 
 
 # ============== Admin Bootstrap & RBAC ==============
@@ -2008,6 +2038,18 @@ async def supplier_accept_order(order_id: str, user: dict = Depends(require_role
         "target": {"order_id": order_id}, "meta": {},
         "timestamp": now_iso,
     })
+    if order.get("pharmacy_id"):
+        try:
+            await notif_mod.create_notification(
+                order["pharmacy_id"],
+                "تم قبول طلبيتك",
+                f"قام {order.get('supplier_name', 'المذخر')} بقبول طلبيتك وسيبدأ التجهيز قريباً.",
+                type="order",
+                data={"screen": "/pharmacy-orders", "order_id": order_id},
+                dedupe_key=f"order:{order_id}:accepted",
+            )
+        except Exception:
+            logger.exception("notify accepted failed")
     return {"status": "ok", "order_status": "accepted"}
 
 
@@ -2052,6 +2094,17 @@ async def supplier_processing_order(order_id: str, user: dict = Depends(require_
         "target": {"order_id": order_id}, "meta": {},
         "timestamp": now_iso,
     })
+    if order.get("pharmacy_id"):
+        try:
+            await notif_mod.create_notification(
+                order["pharmacy_id"], "قيد التجهيز",
+                f"طلبيتك من {order.get('supplier_name', 'المذخر')} قيد التجهيز الآن.",
+                type="order",
+                data={"screen": "/pharmacy-orders", "order_id": order_id},
+                dedupe_key=f"order:{order_id}:processing",
+            )
+        except Exception:
+            logger.exception("notify processing failed")
     return {"status": "ok", "order_status": "processing"}
 
 
@@ -2072,6 +2125,17 @@ async def supplier_delivered_order(order_id: str, user: dict = Depends(require_r
         "target": {"order_id": order_id}, "meta": {},
         "timestamp": now_iso,
     })
+    if order.get("pharmacy_id"):
+        try:
+            await notif_mod.create_notification(
+                order["pharmacy_id"], "تم تسليم طلبيتك",
+                f"وصلت طلبيتك من {order.get('supplier_name', 'المذخر')}. يرجى تأكيد الاستلام أو الإبلاغ عن عدم الاستلام.",
+                type="order",
+                data={"screen": "/pharmacy-orders", "order_id": order_id, "filter": "delivered"},
+                dedupe_key=f"order:{order_id}:delivered",
+            )
+        except Exception:
+            logger.exception("notify delivered failed")
     return {"status": "ok", "order_status": "delivered"}
 
 

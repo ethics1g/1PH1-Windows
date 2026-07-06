@@ -53,6 +53,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(t);
     setRole(r);
     setUser(u);
+    // Register for push notifications (non-blocking, no-op on web)
+    try {
+      const { registerForPushNotifications } = await import('./push');
+      registerForPushNotifications(u.id, t).catch(() => {});
+    } catch {}
   };
 
   const signOut = async () => {

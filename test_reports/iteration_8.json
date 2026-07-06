@@ -1,0 +1,41 @@
+{
+  "summary": "Comprehensive backend + frontend testing of the Notification & Account Management system (Phases 1-3). Backend: 26/26 pytest cases passed (100%) — covers Notification Center CRUD, cross-user isolation, Preferences (including the partial PUT no-500 regression), password change flow with Arabic error + system notification + password restore, profile GET/PATCH, admin panel (send all/role, schedule+run, schedule+cancel, cancel-sent-400, history sorting, audience-summary), RBAC (pharmacy 403 on admin/send, supplier 403 on register-push with foreign user_id), /api/register-push placeholder → {status:queued}, /api/medicines/expired-list (pharmacy 200, supplier 403), and direct in-process invocation of _daily_expiry_scan (with dedupe verification) + _weekly_expired_report. Frontend: mobile viewport (390x844) verified — login → /home → right-side drawer opens with all items (profile/notif-center/settings/password/notif-prefs/logout), unread badge (6) renders, /notifications page renders items with mark-all + clear-all toolbar and delete buttons, /settings hub shows all rows, /settings/personal loads profile, /settings/password has 3 inputs+submit, /settings/notifications has all 5 toggles, /medicines/expired renders TEST_ExpiredMed correctly (deep-link target working). CRITICAL FRONTEND BUG FOUND: admin role gating uses `user?.role === 'admin'` but the auth context stores role as a SEPARATE top-level field (not inside user object) — this makes the /admin/notifications page show 'مخصصة للمسؤول فقط' even when logged in as admin, and hides the drawer-admin-notif entry. Order lifecycle notification test was not automated (would require full order-flow scaffolding); backend order notification code is present but not exercised end-to-end by this iteration.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "app/admin/notifications.tsx", "issue": "Line 16: `const isAdmin = user?.role === 'admin'` — role is NOT a property on the user object; it is a separate top-level field in useAuth() context. Admin users always see the 'مخصصة للمسؤول فقط' locked page and cannot access send/schedule/history UI. Fix: destructure `const { token, user, role } = useAuth(); const isAdmin = role === 'admin';`", "testID": "input-title/input-body/aud-*/btn-send", "priority": "CRITICAL"},
+      {"component": "src/AppDrawer.tsx", "issue": "Lines 74 & 83 read `user?.role`. Consequence: (a) the role pill under the user name shows empty label; (b) the admin-only row 'إشعارات الإدارة' (testID='drawer-admin-notif') never appears for admin users. Fix: read `role` from useAuth() directly.", "testID": "drawer-admin-notif", "priority": "CRITICAL"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_notifications_system.py",
+    "/app/test_reports/pytest/pytest_notifications_results.xml"
+  ],
+  "action_items": [
+    "Fix admin role gating: in app/admin/notifications.tsx replace `user?.role === 'admin'` with a check against the top-level `role` from useAuth().",
+    "Fix drawer admin gating: in src/AppDrawer.tsx destructure `role` from useAuth() and use `role === 'admin'` in both the filter (line 83) and the roleLabel display (line 74).",
+    "(Optional) Consider embedding `role` inside the persisted user object at signIn time for consistency across the codebase; otherwise audit all other files that reference `user.role`.",
+    "Add automated E2E for order lifecycle notifications (pending→accepted→processing→delivered) — code path exists in server.py but wasn't exercised by this iteration."
+  ],
+  "critical_code_review_comments": [
+    "Notifications module (/app/backend/notifications.py) is 899 lines — approaching the 700-line threshold; consider splitting scheduler + push relay into separate submodules for maintainability.",
+    "notifications.py::init() stores hash_password/verify_password by reference — fine, but note that verify_password parameter was added recently; ensure server.py passes it consistently. Verified working via test_change_and_reset.",
+    "send_push relay uses a module-level singleton httpx.AsyncClient with the initial EMERGENT_PUSH_KEY captured at import time — if the deployer rotates the key, the process must be restarted to pick it up. Consider re-reading env per-call or exposing an admin endpoint to refresh.",
+    "audience_mode='ids' with a random uuid still creates a delivered=0 batch and marks status='sent' — behaviour is acceptable but noise-prone; consider surfacing 'skipped: audience empty' in stats."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_notifications_system.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "80%"},
+  "seed_data_creation": "Test suite temporarily inserts TEST_-prefixed medicine docs into /app/backend medicines collection and cleans them up in the same test. Admin-broadcast messages titled TEST_ALL, TEST_ROLE_PH, TEST_SCH, TEST_CANCEL, TEST_NOW, PH_ONLY remain in notification_batches history and in the pharmacy 07700000001 notifications inbox. Pharmacy password was changed and reset back to 'pass123' by test_change_and_reset (verified).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend suite is stable at 26/26. After main agent fixes the two `user?.role` -> `role` bugs (admin/notifications.tsx + AppDrawer.tsx), re-run the frontend playwright flow using admin credentials 0000000000/admin123 and assert: (1) drawer-admin-notif visible in drawer, (2) /admin/notifications page renders input-title/input-body/aud-all/aud-role/aud-region/aud-ids/btn-send/btn-schedule, (3) pressing btn-send with all-audience shows Alert with delivery counts. Then verify pharmacy view UNCHANGED (drawer-admin-notif absent, admin page still shows locked message).",
+  "rca_of_issue": "ROOT CAUSE: The auth context (src/auth.tsx) stores `token`, `role`, and `user` as three independent state slices. The backend /api/auth/login response returns `{token, role, user:{id,email,phone,must_change_password}}` — role is NOT nested inside user. src/AppDrawer.tsx line 83 and app/admin/notifications.tsx line 16 both write `user?.role === 'admin'`, which is always false. REPRODUCTION: login as 0000000000/admin123 → open drawer → the admin-only row is missing → navigate directly to /admin/notifications → locked page shown. MITIGATION: change both files to destructure `role` from useAuth() (already exported by the provider). No backend change required."
+}

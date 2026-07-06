@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../src/auth';
 import { colors } from '../src/theme';
+import HeaderMenuButton from '../src/HeaderMenuButton';
 
 type Tile = {
   key: string;
@@ -35,6 +36,7 @@ export default function Home() {
           <Text style={styles.hello}>أهلاً بك</Text>
           <Text style={styles.pharmacy} testID="home-pharmacy-name">{user?.name || 'صيدلية'}</Text>
         </View>
+        <HeaderMenuButton />
         <TouchableOpacity
           testID="btn-logout"
           style={styles.logoutBtn}
