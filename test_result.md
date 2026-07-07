@@ -1246,3 +1246,44 @@ agent_communication:
         container (12288-watch limit); non-critical dirs get a one-time
         "[metro-file-map] Reached OS file-watcher limit" warning that is
         expected and safe.
+
+# =====================================================================
+# ITERATION: RETURNS (الرواجع) E2E — 2026-07
+# =====================================================================
+backend:
+  - task: "Returns flow — stock deduction, supplier credit, ledger, idempotency"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/returns.py, /app/backend/batches.py, /app/backend/accounting.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "main"
+        -comment: |
+          Fix applied: `restore_batches` had the wrong semantic — it ADDED stock
+          back on confirm-receipt whereas the workflow is pharmacy→supplier
+          return (goods physically leave the pharmacy). New function
+          `deduct_for_return` performs LIFO deduction (newest batch first) and
+          is called from returns.py `_confirm`. `restore_batches` kept as a
+          deprecated alias that delegates to `deduct_for_return` for backward
+          compat. Confirm-receipt response now includes `deducted_units`
+          instead of `restored_units`.
+
+          Verified locally (25/25 pytest) via test_returns_flow.py:
+          - E2E chain: buy-v2 → sell → supplier order → completion → return
+          - LIFO deduction on both med with headroom (MED-A) and med at max
+            stock (MED-B) — both correctly decrement.
+          - Idempotent apply_return_credit (single ledger entry).
+          - Rejection path leaves ledger + stock untouched.
+          - Guards: over-qty return, pending-order return, unauth, wrong role.
+          - Profit report unaffected by supplier returns (correct — a purchase
+            return is not a POS sale reversal).
+
+test_plan:
+  current_focus:
+    - "Returns flow — stock deduction, supplier credit, ledger, idempotency"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"

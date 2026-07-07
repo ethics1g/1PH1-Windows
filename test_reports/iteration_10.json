@@ -1,0 +1,40 @@
+{
+  "summary": "Backend E2E verification of the RETURNS (الرواجع) workflow after the batches.deduct_for_return rename fix. Ran the full suite of 25 pytest cases in test_returns_flow.py, added 18 new exploratory cases in test_returns_exploratory.py covering the 5 additional scenarios requested (2a-2e), and re-ran the 10 FIFO regression tests. All 53 tests pass. Purchase-return direction confirmed: pharmacy stock DECREASES via LIFO on confirm-receipt; supplier account is credited exactly once per return with the full return total; multiple sequential returns from the same order each get their own distinct ledger entry (verified reference_id uniqueness); custom lines without medicine_id are skipped for stock deduction but still counted in the credit total; aggregate returnable-qty guard correctly considers pending (non-rejected) returns; confirm-receipt on rejected returns is rejected with 400; profit-report untouched by returns (as expected — this is a purchase return, not a sales return). No deprecated Expo packages introduced in changed files. No red-screen or backend errors observed. Frontend was intentionally not re-tested per request.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_returns_flow.py",
+    "/app/backend/tests/test_returns_exploratory.py",
+    "/app/backend/tests/test_fifo_inventory.py",
+    "/app/test_reports/pytest/pytest_returns_results.xml",
+    "/app/test_reports/pytest/pytest_returns_exploratory_results.xml",
+    "/app/test_reports/pytest/pytest_fifo_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "returns.py::_confirm allowed_from includes both 'approved' and 'waiting_receipt' — this is by design (some suppliers skip the shipped step) and is documented; kept as-is.",
+    "batches.py::restore_batches is now a deprecated thin wrapper delegating to deduct_for_return. If any callers still expect the old restore semantics they would silently deduct. Grep on /app/backend confirms no remaining callers of restore_batches at commit time — safe.",
+    "returns.py::_confirm swallows per-item deduction exceptions with `logger.exception` and continues — good for resilience but means partial deduction could occur silently. Acceptable per the documented best-effort strategy (supplier credit still applied for full amount).",
+    "The aggregate-returnable-qty guard uses `name.lower()` as key. Two items with identical names would be aggregated together (unlikely in practice, but worth noting)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_returns_exploratory.py (created — 18 new exploratory pytest cases)"
+  ],
+  "success_rate": {
+    "backend": "100% (53/53 tests: 25 returns flow + 18 exploratory + 10 FIFO regression)",
+    "frontend": "not tested this iteration (per request)"
+  },
+  "seed_data_creation": "Each pytest module seeds its own medicines (prefixed RTN_MED_* / EXP_*) with unique timestamps to avoid collisions with prior runs. No cleanup — historical data harmless.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Returns workflow is fully verified backend-side. LIFO deduct-on-confirm-receipt is stable; supplier credit is idempotent (ledger has exactly one entry per return_id, verified). If future changes touch batches.py::deduct_for_return, batches.py::consume_fifo, or accounting.py::apply_return_credit, re-run: `EXPO_PUBLIC_BACKEND_URL=<url> pytest backend/tests/test_returns_flow.py backend/tests/test_returns_exploratory.py backend/tests/test_fifo_inventory.py -v`. The rename `restored_units` → `deducted_units` in the confirm-receipt response is now assumed by both test suites and the fix; do NOT revert.",
+  "rca_of_issue": "N/A — the reported bug (batches.restore_batches originally ADDING stock back for purchase-returns) was already fixed by the main agent before this iteration. Verification confirms the fix is correct and consistent across all touched paths."
+}

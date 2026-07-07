@@ -98,30 +98,48 @@ async def consume_fifo(pharmacy_id: str, medicine_id: str, quantity: int
     return used
 
 
-async def restore_batches(pharmacy_id: str, medicine_id: str, quantity: int) -> int:
-    """Restore returned stock. Adds back to the most-recently-emptied batches
-    (LIFO for restoration) — cheap approximation good enough for returns.
-    Returns actual units restored."""
+async def deduct_for_return(pharmacy_id: str, medicine_id: str, quantity: int) -> int:
+    """Deduct stock from pharmacy inventory because those goods are being
+    shipped back to the supplier as a purchase return.
+
+    Strategy: LIFO — remove from the newest batches first (they are usually
+    the batches whose goods are still on the shelf). Best-effort: if the
+    pharmacy has already sold more than the requested return quantity,
+    we deduct what we can and return that number without raising. The
+    caller (returns.confirm-receipt) still credits the supplier account
+    for the full return value regardless of physical stock available.
+
+    Returns the number of units actually deducted.
+    """
     if quantity <= 0:
         return 0
-    restored = 0
-    remaining_to_add = quantity
+    deducted = 0
+    remaining_to_take = quantity
     async for batch in _db.medicine_batches.find(
-        {"pharmacy_id": pharmacy_id, "medicine_id": medicine_id},
+        {"pharmacy_id": pharmacy_id, "medicine_id": medicine_id,
+         "remaining_quantity": {"$gt": 0}},
         {"_id": 0},
     ).sort("purchased_at", -1):
-        if remaining_to_add <= 0:
+        if remaining_to_take <= 0:
             break
-        headroom = int(batch["quantity"]) - int(batch["remaining_quantity"])
-        if headroom <= 0:
-            continue
-        add = min(headroom, remaining_to_add)
-        await _db.medicine_batches.update_one(
-            {"id": batch["id"]}, {"$inc": {"remaining_quantity": add}},
+        take = min(int(batch["remaining_quantity"]), remaining_to_take)
+        res = await _db.medicine_batches.update_one(
+            {"id": batch["id"], "remaining_quantity": {"$gte": take}},
+            {"$inc": {"remaining_quantity": -take}},
         )
-        restored += add
-        remaining_to_add -= add
-    return restored
+        if res.matched_count == 0:
+            continue
+        deducted += take
+        remaining_to_take -= take
+    return deducted
+
+
+# Deprecated alias kept for backward compatibility (older code paths).
+async def restore_batches(pharmacy_id: str, medicine_id: str, quantity: int) -> int:
+    """DEPRECATED — kept as a thin wrapper for backward compatibility.
+    See `deduct_for_return` for the correct pharmacy→supplier return
+    semantics (stock decreases when goods are shipped back)."""
+    return await deduct_for_return(pharmacy_id, medicine_id, quantity)
 
 
 async def get_total_stock(pharmacy_id: str, medicine_id: str) -> int:

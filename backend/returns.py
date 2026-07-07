@@ -5,8 +5,14 @@ Independent from purchase orders but linked via `original_order_id` for audit.
 Status workflow:
   pending          → supplier approves → approved
   approved         → pharmacy ships    → waiting_for_receipt
-  waiting_receipt  → supplier confirms → completed (stock restored + credit)
+  waiting_receipt  → supplier confirms → completed (stock deducted + credit)
   pending          → supplier rejects  → rejected
+
+NOTE: This is a PURCHASE return (pharmacy → supplier). When the supplier
+confirms receipt of the returned goods, the pharmacy's inventory is
+DEDUCTED (LIFO — newest batches first) because the goods physically
+leave the pharmacy. The supplier account is credited for the full return
+value regardless of physical stock available at deduction time.
 """
 from __future__ import annotations
 
@@ -247,17 +253,21 @@ def install_routes(require_role):
                               {"received_at": _now_iso(),
                                "completed_at": _now_iso()},
                               user["sub"])
-        # Restore stock at pharmacy for tracked medicines (via batch restoration)
+        # Deduct stock at pharmacy for tracked medicines: goods physically
+        # leave the pharmacy when they are shipped back to the supplier.
+        # LIFO deduction is best-effort — if the pharmacy already sold some
+        # of these units, we deduct only what's still on hand; the supplier
+        # credit is still applied for the full return value.
         import batches as _batches
-        restored = 0
+        deducted = 0
         for it in r.get("items", []):
             mid = it.get("medicine_id")
             qty = int(it.get("quantity", 0) or 0)
             if not mid or qty <= 0:
                 continue
             try:
-                added = await _batches.restore_batches(r["pharmacy_id"], mid, qty)
-                restored += added
+                removed = await _batches.deduct_for_return(r["pharmacy_id"], mid, qty)
+                deducted += removed
                 # Refresh mirror on medicine doc
                 new_total = await _batches.get_total_stock(r["pharmacy_id"], mid)
                 await _db.medicines.update_one(
@@ -265,7 +275,7 @@ def install_routes(require_role):
                     {"$set": {"quantity": new_total, "stock": new_total}},
                 )
             except Exception:
-                logger.exception("Batch restore failed for medicine %s", mid)
+                logger.exception("Batch deduct failed for medicine %s", mid)
         # Record credit adjustment (financial memo — pharmacy is owed this amount)
         await _db.return_credits.insert_one({
             "id": str(uuid.uuid4()),
@@ -293,4 +303,4 @@ def install_routes(require_role):
         await _notify(r["pharmacy_id"], "تم إكمال الإرجاع",
                       f"تم استلام المرتجع. رصيدك الدائن: {r.get('total', 0)} د.ع",
                       f"/returns/{rid}", rid)
-        return {"return": r, "restored_units": restored, "credit": credit_result}
+        return {"return": r, "deducted_units": deducted, "credit": credit_result}
