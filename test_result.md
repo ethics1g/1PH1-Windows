@@ -1287,3 +1287,23 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        RETURNS E2E — 53/53 pytest passing (100%).
+        - test_returns_flow.py: 25/25
+        - test_returns_exploratory.py: 18/18 (new, extra scenarios 2a-2e)
+        - test_fifo_inventory.py: 10/10 (regression clean)
+
+        Direction fix (restore_batches → deduct_for_return LIFO) is correct.
+        Supplier credit + ledger + profit-report + stock mirror all consistent.
+        No mocked APIs. Ready for release.
+    - agent: "main"
+      message: |
+        Fixed returns semantics bug: previous restore_batches ADDED stock on
+        confirm-receipt whereas pharmacy→supplier return means goods LEAVE
+        the pharmacy. New deduct_for_return does LIFO deduction. Confirmed
+        by 53 backend tests (25 flow + 18 exploratory + 10 FIFO regression).
+        Test files at /app/backend/tests/test_returns_flow.py and
+        /app/backend/tests/test_returns_exploratory.py.
