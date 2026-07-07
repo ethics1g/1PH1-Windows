@@ -1,0 +1,37 @@
+{
+  "summary": "Backend-only verification of the push notification pipeline for the pharmacy POS app. Wrote 11 pytest cases in test_push_notifications.py covering all items (A-J) in the review request. ALL 11 TESTS PASSED. The reported bug ('Notifications sent by admin are never received by any user') is NOT a backend bug — it is the expected behavior of a dev pod where EMERGENT_PUSH_KEY is 'placeholder' by design. The Emergent relay IS being called for every recipient (verified via log emission of 'Emergent push: 401 unauthorized (EMERGENT_PUSH_KEY placeholder or invalid)') but upstream returns 401 because the real key is only injected during the deployment pipeline. The in-app notification store works perfectly: admin sends materialize into the notifications collection, pharmacies see them at the top of GET /api/notifications, delivered==total, failed==0. Idempotency confirmed: two identical sends produce two distinct batch_ids. Preferences are respected: a pharmacy user with notifications_enabled=false is skipped (delivered_count reflects the skip and no notification row is created for that user). /api/register-push returns 201 with status:queued (never 500) as designed. Static code review of frontend push wiring confirms: module-scope setNotificationHandler + setNotificationChannelAsync, useEffect with both addNotificationResponseReceivedListener + getLastNotificationResponseAsync, push.ts uses getDevicePushTokenAsync (native, NOT Expo), and auth.tsx calls registerForPushNotifications both on signIn AND on AsyncStorage hydration cold-start. app.json has expo-notifications plugin + googleServicesFile. Frontend UI push cannot be tested via web preview per playbook — a native deployed build is required. No bugs found; no fixes applied.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_push_notifications.py",
+    "/app/test_reports/pytest/pytest_push_notifications_results.xml"
+  ],
+  "action_items": [
+    "None. The reported 'no push received' behavior in dev is by design — EMERGENT_PUSH_KEY is 'placeholder' locally and gets substituted with the real key only during the deployment pipeline. Main agent may want to communicate this expectation to the reporting user (or add a health-check endpoint that surfaces whether the key is placeholder vs real, so the deployment team can verify at deploy time)."
+  ],
+  "critical_code_review_comments": [
+    "notifications.py::send_push swallows all upstream exceptions (by design). Good for resilience but means a broken relay is silent — the 401 log line is the only signal in dev. Consider adding a periodic health probe or metric counter in production.",
+    "notifications.py::_register_push returns {'status':'queued'} with HTTP 201 when upstream is 401. Docstring on the endpoint says 'Return 202 so client considers it success' but the decorator uses status_code=201. Not a bug, just a minor comment/code mismatch. Recommendation: align docstring or bump to 202.",
+    "notifications.py::create_notification calls send_push for every notification, including expiry_reminder and expired_weekly. For a large pharmacy list this could produce N http calls in a loop. Acceptable for the current scale but if traffic grows consider batching send_push across recipients of the same batch_id (send_push already supports up to 100 recipients per call — batch dispatch does one call per user instead of one call for the whole batch)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_push_notifications.py (created — 11 pytest cases)"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11 tests)",
+    "frontend": "not tested — web preview cannot exercise FCM/APNs (native build required per playbook); static code review passed."
+  },
+  "seed_data_creation": "Test data uses TEST_Push_* titles (rows persist harmlessly in the notifications and notification_batches collections). Preferences for the pharmacy user 07700000001 are toggled off then back on within test_J and left enabled at the end of the run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The 401 from https://integrations.emergentagent.com/api/v1/push/trigger IS EXPECTED in dev — do NOT flag it as a bug. Verify by grepping /var/log/supervisor/backend.err.log for 'Emergent push: 401 unauthorized (EMERGENT_PUSH_KEY placeholder or invalid)' after every admin send. Any real push validation requires a deployed native build (Expo Go and the web preview cannot receive FCM/APNs). To re-run: `EXPO_PUBLIC_BACKEND_URL=<url> pytest /app/backend/tests/test_push_notifications.py -v`.",
+  "rca_of_issue": "User report: 'Notifications sent by admin are never received by any user.' RCA: This is expected behavior in the dev environment, NOT a bug. EMERGENT_PUSH_KEY is set to the literal string 'placeholder' in the dev pod's environment. When notifications.py::send_push POSTs to https://integrations.emergentagent.com/api/v1/push/trigger with the X-Push-Key header set to 'placeholder', the upstream correctly returns 401. The Emergent Push integration playbook explicitly documents that the real key is injected by the deployment pipeline — it must remain 'placeholder' in dev. The IN-APP notification store still works (rows are created in the notifications collection, users see them in the notification center via GET /api/notifications) — the bell/list badge WILL update; only the OS-level FCM/APNs banner is absent. Mitigation: (1) deploy the app to production so the real EMERGENT_PUSH_KEY is substituted, or (2) build a native binary and test on a real device with a valid key. No code change needed."
+}

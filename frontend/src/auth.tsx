@@ -42,6 +42,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setToken(parsed.token);
           setRole(parsed.role);
           setUser(parsed.user);
+          // Re-register for push on every app open (tokens rotate).
+          // Non-blocking, no-op on web. Playbook mandates re-registration.
+          try {
+            const { registerForPushNotifications } = await import('./push');
+            registerForPushNotifications(parsed.user?.id, parsed.token).catch(() => {});
+          } catch {}
         }
       } catch {}
       setLoading(false);

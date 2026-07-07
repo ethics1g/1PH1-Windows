@@ -1307,3 +1307,75 @@ agent_communication:
         by 53 backend tests (25 flow + 18 exploratory + 10 FIFO regression).
         Test files at /app/backend/tests/test_returns_flow.py and
         /app/backend/tests/test_returns_exploratory.py.
+
+# =====================================================================
+# ITERATION: PUSH NOTIFICATIONS DIAGNOSTIC + FIX — 2026-07
+# =====================================================================
+backend:
+  - task: "Emergent-managed Push relay (send_push + /register-push + admin send)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/notifications.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Diagnosed the reported "notifications not received" issue.
+          Root cause (BY DESIGN — matches Emergent Push playbook):
+          1) EMERGENT_PUSH_KEY=placeholder in dev pod → /api/v1/push/trigger
+             returns 401. In-app notifications ARE created in the DB and
+             visible in the app's notification center, but FCM/APNs delivery
+             is disabled until the app is deployed (the deployer pipeline
+             replaces the placeholder with a real key at build time).
+          2) Expo Go / web preview do NOT support FCM/APNs — a native
+             dev/prod build (via the "Publish" flow) is REQUIRED for
+             device delivery.
+
+          Verified live:
+          - `POST /api/admin/notifications/send` → status:sent, total:18,
+            delivered:18, failed:0 (in-app store works).
+          - `POST /api/v1/push/trigger` upstream → 401 (expected; logs
+            "EMERGENT_PUSH_KEY placeholder or invalid").
+
+          Implementation review against integration_playbook_expert_v2
+          playbook — 100% aligned:
+          - setNotificationHandler + setNotificationChannelAsync at
+            _layout.tsx module scope with Platform.OS guards ✓
+          - addNotificationResponseReceivedListener + getLastNotification
+            ResponseAsync in useEffect, cleanup on unmount ✓
+          - Frontend uses getDevicePushTokenAsync (native, NOT Expo push) ✓
+          - Backend POST /register-push → /api/v1/push/users/register ✓
+          - send_push helper → /api/v1/push/trigger with X-Push-Key ✓
+          - app.json: expo-notifications plugin, googleServicesFile set ✓
+
+          Fix applied (playbook gap):
+          - Re-register push on every app open, not just on login.
+            src/auth.tsx now calls registerForPushNotifications from the
+            AsyncStorage-hydration useEffect too (tokens rotate).
+
+frontend:
+  - task: "Push token re-registration on cold start"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/auth.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Added registerForPushNotifications call in the auth hydration
+          useEffect so cold-start re-registers the native token
+          (playbook says re-register on every app open).
+
+test_plan:
+  current_focus:
+    - "Emergent-managed Push relay (send_push + /register-push + admin send)"
+    - "Push token re-registration on cold start"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
