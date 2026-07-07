@@ -1217,3 +1217,32 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        FIFO E2E — ALL 10 PYTEST CASES PASS + FRONTEND VERIFIED.
+
+        Backend (test_fifo_inventory.py):
+        - Buy-v2 creates 3 batches @ 100/150/180 with qty 10/20/15.
+        - GET /api/medicines/{id}/batches returns them all, total_stock=45.
+        - Sell 15 → cost=1750 (10×100 + 5×150), profit=1250. item.fifo_batches audit correct.
+        - Sell 25 → cost=4050 (15×150 + 10×180), profit=950.
+        - Sell 10 with only 5 remaining → 400 "الكمية غير كافية".
+        - /api/accounting/profit-report?period=day rows match sales exactly.
+        - restore_batches uses LIFO restore (intentional).
+
+        Frontend:
+        - Login pharmacy pass. /buy shows distinct purchase_price + selling_price
+          fields. /accounting/profit-report renders today's data.
+        - No regressions on /sell.
+
+        No fixes required. Regression test file kept at
+        /app/backend/tests/test_fifo_inventory.py.
+    - agent: "main"
+      message: |
+        Fixed Metro ENOSPC blocker via metro-file-map/FallbackWatcher patch +
+        aggressive resolver.blockList. Expo now bundles successfully in the
+        container (12288-watch limit); non-critical dirs get a one-time
+        "[metro-file-map] Reached OS file-watcher limit" warning that is
+        expected and safe.
