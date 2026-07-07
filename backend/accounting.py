@@ -139,6 +139,127 @@ def _sale_totals(items: List[Dict[str, Any]]) -> Dict[str, float]:
 
 
 # =====================================================================
+# ==== Supplier Accounts (pharmacy → supplier payable + credits) ======
+# =====================================================================
+
+async def _pharmacy_supplier_debit(pharmacy_id: str, supplier_id: str) -> float:
+    """Sum of `total` from all completed orders between this pharmacy and supplier.
+    Falls back to `total_cost` for legacy docs."""
+    pipeline = [
+        {"$match": {"pharmacy_id": pharmacy_id, "supplier_id": supplier_id,
+                    "status": "completed"}},
+        {"$group": {"_id": None,
+                    "total": {"$sum": {"$ifNull": ["$total", "$total_cost"]}}}},
+    ]
+    async for r in _db.orders.aggregate(pipeline):
+        return float(r.get("total", 0) or 0)
+    return 0.0
+
+
+async def _read_supplier_account(pharmacy_id: str, supplier_id: str) -> Dict[str, Any]:
+    """Compute live balance: debit (completed orders) − credit (applied returns)."""
+    acct = await _db.supplier_accounts.find_one(
+        {"pharmacy_id": pharmacy_id, "supplier_id": supplier_id}, {"_id": 0},
+    )
+    if not acct:
+        acct = {
+            "pharmacy_id": pharmacy_id, "supplier_id": supplier_id,
+            "credit_applied_total": 0.0, "available_credit": 0.0,
+            "applied_return_ids": [], "updated_at": _now_iso(),
+        }
+        await _db.supplier_accounts.insert_one(acct.copy())
+    debit = await _pharmacy_supplier_debit(pharmacy_id, supplier_id)
+    credit_applied = float(acct.get("credit_applied_total", 0) or 0)
+    outstanding = max(0.0, round(debit - credit_applied, 2))
+    return {
+        "pharmacy_id": pharmacy_id,
+        "supplier_id": supplier_id,
+        "total_purchased": round(debit, 2),           # الإجمالي المُشترى (طلبيات مكتملة)
+        "credit_applied_total": round(credit_applied, 2),  # قيمة الرواجع المطبَّقة
+        "outstanding_balance": outstanding,            # الرصيد الحالي الواجب دفعه
+        "available_credit": round(acct.get("available_credit", 0) or 0, 2),  # رصيد دائن جاهز
+        "applied_return_ids": acct.get("applied_return_ids", []),
+        "updated_at": acct.get("updated_at"),
+    }
+
+
+async def apply_return_credit(pharmacy_id: str, supplier_id: str,
+                              return_id: str, amount: float,
+                              description: Optional[str] = None) -> Dict[str, Any]:
+    """Atomically apply a return credit to the pharmacy↔supplier account.
+
+    Guarantees:
+    - Idempotent via `applied_return_ids` set + MongoDB findOneAndUpdate condition.
+      A second call with the same return_id is a no-op (returns existing state).
+    - Reduces outstanding first; any excess overflows into available_credit for
+      future purchases.
+    - Records an immutable ledger entry (supplier_ledger) for audit.
+    """
+    if amount <= 0:
+        return {"status": "skipped", "reason": "amount<=0"}
+
+    # Idempotency guard: only apply if not already in applied_return_ids
+    now = _now_iso()
+    # Ensure account doc exists first (safe with unique index)
+    await _db.supplier_accounts.update_one(
+        {"pharmacy_id": pharmacy_id, "supplier_id": supplier_id},
+        {"$setOnInsert": {"pharmacy_id": pharmacy_id, "supplier_id": supplier_id,
+                          "credit_applied_total": 0.0, "available_credit": 0.0,
+                          "applied_return_ids": [], "updated_at": now}},
+        upsert=True,
+    )
+    # Then attempt atomic apply only when return_id not already recorded
+    upd_res = await _db.supplier_accounts.find_one_and_update(
+        {"pharmacy_id": pharmacy_id, "supplier_id": supplier_id,
+         "applied_return_ids": {"$ne": return_id}},
+        {"$inc": {"credit_applied_total": round(amount, 2)},
+         "$addToSet": {"applied_return_ids": return_id},
+         "$set": {"updated_at": now}},
+        return_document=True,
+    )
+    if upd_res is None:
+        # Already applied (guard by filter) — no-op
+        return {"status": "already_applied", "return_id": return_id}
+
+    # Post-adjust: if new credit_applied > debit → excess flows to available_credit
+    debit = await _pharmacy_supplier_debit(pharmacy_id, supplier_id)
+    new_credit_applied = float(upd_res.get("credit_applied_total", 0) or 0)
+    excess = 0.0
+    if new_credit_applied > debit:
+        excess = round(new_credit_applied - debit, 2)
+        # Cap credit_applied_total at debit and put the rest in available_credit
+        await _db.supplier_accounts.update_one(
+            {"pharmacy_id": pharmacy_id, "supplier_id": supplier_id},
+            {"$set": {"credit_applied_total": round(debit, 2)},
+             "$inc": {"available_credit": excess}},
+        )
+
+    outstanding_now = max(0.0, round(debit - min(new_credit_applied, debit), 2))
+
+    # Ledger entry
+    await _db.supplier_ledger.insert_one({
+        "id": str(uuid.uuid4()),
+        "pharmacy_id": pharmacy_id,
+        "supplier_id": supplier_id,
+        "kind": "return_credit",
+        "amount": round(amount, 2),
+        "outstanding_after": outstanding_now,
+        "excess_to_credit": excess,
+        "description": description or "Supplier Return Credit Applied — رصيد إرجاع",
+        "reference_type": "return",
+        "reference_id": return_id,
+        "created_at": now,
+    })
+    return {
+        "status": "applied",
+        "return_id": return_id,
+        "amount_applied": round(amount, 2),
+        "outstanding_balance": outstanding_now,
+        "excess_to_credit": excess,
+    }
+
+
+# =====================================================================
 # =========================  ROUTES  ==================================
 # =====================================================================
 
@@ -462,3 +583,67 @@ def install_routes(require_role):
         return {"status": "ok", "payment": payment,
                 "customer_status": new_status,
                 "remaining_balance": new_remaining}
+
+    # -------------- Supplier Accounts (pharmacy → supplier payable) --------------
+    @router_accounting.get("/accounting/supplier-accounts")
+    async def _list_supplier_accounts(user: dict = Depends(require_role("pharmacy"))):
+        """Overview of pharmacy's balances with all suppliers they've purchased from."""
+        # Enumerate suppliers from completed orders
+        pipeline = [
+            {"$match": {"pharmacy_id": user["sub"], "status": "completed"}},
+            {"$group": {"_id": "$supplier_id",
+                        "total": {"$sum": {"$ifNull": ["$total", "$total_cost"]}},
+                        "supplier_name": {"$last": "$supplier_name"},
+                        "order_count": {"$sum": 1}}},
+        ]
+        items = []
+        total_outstanding = 0.0
+        total_credit = 0.0
+        async for row in _db.orders.aggregate(pipeline):
+            sid = row["_id"]
+            if not sid:
+                continue
+            acct = await _read_supplier_account(user["sub"], sid)
+            acct["supplier_name"] = row.get("supplier_name")
+            acct["order_count"] = row.get("order_count", 0)
+            items.append(acct)
+            total_outstanding += acct["outstanding_balance"]
+            total_credit += acct["available_credit"]
+        items.sort(key=lambda x: -x["outstanding_balance"])
+        return {
+            "items": items,
+            "count": len(items),
+            "total_outstanding": round(total_outstanding, 2),
+            "total_available_credit": round(total_credit, 2),
+        }
+
+    @router_accounting.get("/accounting/supplier-accounts/{supplier_id}")
+    async def _get_supplier_account(supplier_id: str,
+                                    user: dict = Depends(require_role("pharmacy"))):
+        """Detailed statement: balance + ledger + related orders + returns."""
+        acct = await _read_supplier_account(user["sub"], supplier_id)
+        supplier = await _db.suppliers.find_one({"id": supplier_id}, {"_id": 0, "id": 1, "name": 1, "phone": 1})
+        acct["supplier"] = supplier
+        # Ledger entries
+        ledger = []
+        async for l in _db.supplier_ledger.find(
+            {"pharmacy_id": user["sub"], "supplier_id": supplier_id}, {"_id": 0},
+        ).sort("created_at", -1).limit(500):
+            ledger.append(l)
+        # Related orders
+        orders = []
+        async for o in _db.orders.find(
+            {"pharmacy_id": user["sub"], "supplier_id": supplier_id, "status": "completed"},
+            {"_id": 0, "id": 1, "total": 1, "total_cost": 1, "created_at": 1,
+             "completed_at": 1, "items": 1, "commit_id": 1},
+        ).sort("created_at", -1).limit(200):
+            orders.append(o)
+        # Related returns
+        returns = []
+        async for r in _db.returns.find(
+            {"pharmacy_id": user["sub"], "supplier_id": supplier_id, "status": "completed"},
+            {"_id": 0, "id": 1, "total": 1, "created_at": 1, "completed_at": 1,
+             "reason": 1, "items": 1},
+        ).sort("created_at", -1).limit(200):
+            returns.append(r)
+        return {"account": acct, "ledger": ledger, "orders": orders, "returns": returns}

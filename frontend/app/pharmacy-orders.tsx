@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useAuth, apiFetch } from '../src/auth';
 import { colors } from '../src/theme';
 import ScreenHeader from '../src/ScreenHeader';
@@ -18,6 +18,9 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
   completed:    { label: 'مكتملة',          color: '#166534', bg: '#dcfce7' },
   rejected:     { label: 'مرفوضة',          color: '#991b1b', bg: '#fee2e2' },
   not_received: { label: 'لم تُستلم',       color: '#9a3412', bg: '#ffedd5' },
+  // return statuses
+  approved:        { label: 'موافق على الإرجاع', color: '#1e40af', bg: '#dbeafe' },
+  waiting_receipt: { label: 'بانتظار الاستلام',  color: '#7c3aed', bg: '#ede9fe' },
 };
 const FILTERS: Array<{ key: string; label: string }> = [
   { key: 'all', label: 'الكل' },
@@ -28,13 +31,16 @@ const FILTERS: Array<{ key: string; label: string }> = [
   { key: 'completed', label: 'مكتملة' },
   { key: 'not_received', label: 'لم تُستلم' },
   { key: 'rejected', label: 'مرفوضة' },
+  { key: 'returns', label: 'الرواجع' },
 ];
 
 const fmt = (n: number) => Math.round(n || 0).toLocaleString();
 
 export default function PharmacyOrders() {
   const { token } = useAuth();
+  const router = useRouter();
   const [items, setItems] = useState<any[]>([]);
+  const [returns, setReturns] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState('all');
@@ -42,9 +48,14 @@ export default function PharmacyOrders() {
 
   const load = useCallback(async () => {
     try {
-      const path = filter === 'all' ? '/pharmacy/orders' : `/pharmacy/orders?status=${filter}`;
-      const res: any = await apiFetch(path, {}, token);
-      setItems(Array.isArray(res) ? res : []);
+      if (filter === 'returns') {
+        const r: any = await apiFetch('/returns', {}, token);
+        setReturns(r.items || []);
+      } else {
+        const path = filter === 'all' ? '/pharmacy/orders' : `/pharmacy/orders?status=${filter}`;
+        const res: any = await apiFetch(path, {}, token);
+        setItems(Array.isArray(res) ? res : []);
+      }
     } catch (e: any) { Alert.alert('خطأ', e.message); }
     finally { setLoading(false); setRefreshing(false); }
   }, [token, filter]);
@@ -110,12 +121,42 @@ export default function PharmacyOrders() {
       </View>
 
       <FlatList
-        data={items}
+        data={filter === 'returns' ? returns : items}
         keyExtractor={(o) => o.id}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />}
         contentContainerStyle={{ padding: 12, gap: 10, paddingBottom: 30 }}
-        ListEmptyComponent={<Text style={styles.empty}>لا توجد طلبيات</Text>}
+        ListEmptyComponent={<Text style={styles.empty}>{filter === 'returns' ? 'لا توجد طلبات إرجاع' : 'لا توجد طلبيات'}</Text>}
         renderItem={({ item: o }) => {
+          // Return card branch
+          if (filter === 'returns') {
+            const meta = STATUS_META[o.status] || STATUS_META.pending;
+            return (
+              <TouchableOpacity testID={`return-${o.id}`} style={styles.card} onPress={() => router.push(`/returns/${o.id}` as any)}>
+                <View style={styles.row}>
+                  <View style={[styles.pill, { backgroundColor: meta.bg }]}>
+                    <Text style={[styles.pillTxt, { color: meta.color }]}>{meta.label}</Text>
+                  </View>
+                  <Text style={styles.dateTxt}>{new Date(o.created_at).toLocaleString('ar')}</Text>
+                </View>
+                <View style={styles.partyRow}>
+                  <Ionicons name="return-up-back" size={18} color={colors.error} />
+                  <View style={{ flex: 1, alignItems: 'flex-end' }}>
+                    <Text style={styles.partyName}>إرجاع إلى: {o.supplier_name || 'المذخر'}</Text>
+                  </View>
+                </View>
+                <View style={styles.itemsBox}>
+                  {(o.items || []).slice(0, 3).map((it: any, i: number) => (
+                    <Text key={i} style={styles.itemLine}>• {it.name} × {it.quantity}</Text>
+                  ))}
+                </View>
+                <View style={styles.totalRow}>
+                  <Text style={styles.totalLabel}>قيمة الإرجاع</Text>
+                  <Text style={styles.totalVal}>{fmt(o.total)} د.ع</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          }
+
           const meta = STATUS_META[o.status] || STATUS_META.pending;
           return (
             <View style={styles.card} testID={`order-${o.id}`}>
@@ -152,6 +193,14 @@ export default function PharmacyOrders() {
               ) : null}
               {o.status === 'completed' && o.auto_completed ? (
                 <Text style={styles.muted}>تم الإكمال تلقائياً بعد 72 ساعة</Text>
+              ) : null}
+
+              {/* Return button on delivered / completed */}
+              {(o.status === 'delivered' || o.status === 'completed') ? (
+                <TouchableOpacity testID={`btn-return-${o.id}`} style={[styles.actionBtn, { backgroundColor: colors.indigo, marginTop: 6 }]} onPress={() => router.push(`/returns/create/${o.id}` as any)}>
+                  <Ionicons name="return-up-back" size={16} color="#fff" />
+                  <Text style={styles.actionTxt}>طلب إرجاع</Text>
+                </TouchableOpacity>
               ) : null}
 
               {o.status === 'delivered' ? (

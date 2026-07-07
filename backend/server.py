@@ -1384,6 +1384,12 @@ acc_mod.init(db, require_role)
 acc_mod.install_routes(require_role)
 app.include_router(acc_mod.router_accounting)
 
+# ============== Returns Module (product returns) ==============
+import returns as returns_mod  # noqa: E402
+returns_mod.init(db, require_role, notif_mod=notif_mod, accounting_mod=acc_mod)
+returns_mod.install_routes(require_role)
+app.include_router(returns_mod.router_returns)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

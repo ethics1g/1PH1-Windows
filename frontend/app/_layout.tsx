@@ -98,6 +98,11 @@ export default function RootLayout() {
           <Stack.Screen name="accounting/index" />
           <Stack.Screen name="customers/index" />
           <Stack.Screen name="customers/[id]" />
+          <Stack.Screen name="returns/create/[orderId]" />
+          <Stack.Screen name="returns/[id]" />
+          <Stack.Screen name="supplier-returns" />
+          <Stack.Screen name="accounting/supplier-accounts/index" />
+          <Stack.Screen name="accounting/supplier-accounts/[supplierId]" />
         </Stack>
       </AuthProvider>
     </SafeAreaProvider>

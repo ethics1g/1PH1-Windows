@@ -81,6 +81,11 @@ export default function AccountingDashboard() {
           <Ionicons name="people" size={18} color="#fff" />
           <Text style={styles.actionTxt}>ديون الزبائن</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity testID="btn-supplier-accounts" style={[styles.actionBtn, { backgroundColor: colors.indigo, marginTop: 10 }]} onPress={() => router.push('/accounting/supplier-accounts' as any)}>
+          <Ionicons name="storefront" size={18} color="#fff" />
+          <Text style={styles.actionTxt}>حسابات المذاخر (المدفوعات + الرواجع)</Text>
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
