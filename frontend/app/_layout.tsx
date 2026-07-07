@@ -103,6 +103,7 @@ export default function RootLayout() {
           <Stack.Screen name="supplier-returns" />
           <Stack.Screen name="accounting/supplier-accounts/index" />
           <Stack.Screen name="accounting/supplier-accounts/[supplierId]" />
+          <Stack.Screen name="accounting/profit-report" />
         </Stack>
       </AuthProvider>
     </SafeAreaProvider>

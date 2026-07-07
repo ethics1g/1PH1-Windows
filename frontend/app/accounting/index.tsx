@@ -86,6 +86,11 @@ export default function AccountingDashboard() {
           <Ionicons name="storefront" size={18} color="#fff" />
           <Text style={styles.actionTxt}>حسابات المذاخر (المدفوعات + الرواجع)</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity testID="btn-profit-report" style={[styles.actionBtn, { backgroundColor: '#16a34a', marginTop: 10 }]} onPress={() => router.push('/accounting/profit-report' as any)}>
+          <Ionicons name="trending-up" size={18} color="#fff" />
+          <Text style={styles.actionTxt}>تقرير الأرباح (يومي/شهري/سنوي)</Text>
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );

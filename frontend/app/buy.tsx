@@ -18,13 +18,14 @@ export default function Buy() {
   const [name, setName] = useState('');
   const [barcode, setBarcode] = useState('');
   const [quantity, setQuantity] = useState('1');
-  const [price, setPrice] = useState('');
+  const [price, setPrice] = useState('');            // Selling price (السعر البيع)
+  const [purchasePrice, setPurchasePrice] = useState(''); // Purchase price (سعر الشراء)
   const [expiryDate, setExpiryDate] = useState(''); // YYYY-MM-DD
   const [image, setImage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const reset = () => {
-    setName(''); setBarcode(''); setQuantity('1'); setPrice(''); setExpiryDate(''); setImage(null);
+    setName(''); setBarcode(''); setQuantity('1'); setPrice(''); setPurchasePrice(''); setExpiryDate(''); setImage(null);
   };
 
   const handleBarcode = async (bc: string) => {
@@ -59,8 +60,8 @@ export default function Buy() {
   };
 
   const save = async () => {
-    if (!name.trim() || !quantity || !price) {
-      Alert.alert('تنبيه', 'اسم الدواء، الكمية، والسعر مطلوبة');
+    if (!name.trim() || !quantity || !price || !purchasePrice) {
+      Alert.alert('تنبيه', 'اسم الدواء، الكمية، سعر الشراء، وسعر البيع مطلوبة');
       return;
     }
     if (!expiryDate.trim()) {
@@ -76,13 +77,14 @@ export default function Buy() {
     const normalized = parsed.value;
     setBusy(true);
     try {
-      await apiFetch('/medicines/buy', {
+      await apiFetch('/medicines/buy-v2', {
         method: 'POST',
         body: JSON.stringify({
           name: name.trim(),
           barcode: barcode.trim() || null,
           quantity: parseInt(quantity) || 0,
-          price: parseFloat(price) || 0,
+          purchase_price: parseFloat(purchasePrice) || 0,
+          selling_price: parseFloat(price) || 0,
           expiry_date: normalized,
           image_base64: image,
         }),
@@ -119,7 +121,8 @@ export default function Buy() {
               <Field label="الكمية" value={quantity} onChange={setQuantity} testID="buy-quantity" keyboardType="numeric" />
             </View>
             <View style={{ flex: 1 }}>
-              <Field label="السعر (د.ع)" value={price} onChange={setPrice} testID="buy-price" keyboardType="numeric" />
+              <Field label="سعر الشراء (د.ع) *" value={purchasePrice} onChange={setPurchasePrice} testID="buy-purchase-price" keyboardType="numeric" />
+              <Field label="سعر البيع (د.ع) *" value={price} onChange={setPrice} testID="buy-price" keyboardType="numeric" />
             </View>
           </View>
 

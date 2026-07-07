@@ -1153,3 +1153,67 @@ agent_communication:
 
         No backend code changes were made by me. Backend is production-ready for this feature.
         Test driver: /app/backend_test_expiry.py.
+
+# =====================================================================
+# ITERATION: FIFO INVENTORY COSTING — E2E VERIFICATION (2026-07)
+# =====================================================================
+backend:
+  - task: "FIFO inventory costing (batches + consumption + profit)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/batches.py, /app/backend/accounting.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Fixed Metro ENOSPC in previous session, then merged FIFO backend from
+          batches.py. buy-v2 creates a new batch on every purchase with its own
+          purchase_price + expiry_date. Sales use consume_fifo() which decrements
+          oldest batches first and returns per-batch cost audit. Weighted cost
+          per sale item is stored in sale.items[].purchase_price + cost_total.
+          Profit report aggregates from sale.revenue/cost/profit.
+
+          Needs FULL E2E verification:
+          1. POST /api/medicines/buy-v2 with N distinct purchase prices creates
+             N batches (GET /api/medicines/{id}/batches).
+          2. Selling that medicine consumes batches oldest-first, and the sale's
+             cost equals Σ(batch_cost × qty_taken), NOT the newest / average.
+          3. Sale profit = revenue - cost matches the manual FIFO calculation.
+          4. Medicine total quantity mirrors sum(remaining_quantity across
+             batches) after both buy-v2 and sale.
+          5. /api/accounting/profit-report returns rows aggregated from the
+             above sales.
+          6. Returns (if wired) restore stock via restore_batches (LIFO
+             restore) and reduce total_debt in supplier ledger.
+frontend:
+  - task: "buy.tsx captures purchase_price"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/buy.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          buy.tsx should send purchase_price to /medicines/buy-v2. UI E2E test
+          needed after the ENOSPC fix (login → Buy → purchase price fields
+          → save → confirm reflected in /accounting/profit-report).
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "FIFO inventory costing (batches + consumption + profit)"
+    - "buy.tsx captures purchase_price"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"

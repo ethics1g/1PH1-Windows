@@ -324,21 +324,30 @@ def install_routes(require_role):
             if med.get("quantity", 0) < it.quantity:
                 raise HTTPException(400, f"الكمية غير كافية: {med.get('name')}")
 
-        # Build sold items and apply stock updates
+        # Build sold items and apply stock updates via FIFO batch consumption
+        import batches as _batches  # local import to avoid circular deps
         sold_items = []
         for it in data.items:
             med = mmap[it.medicine_id]
             unit_price = float(med.get("price", 0.0))
-            unit_cost = float(med.get("purchase_price", 0.0) or 0.0)
+            # FIFO deduction — returns per-batch [{batch_id, taken, purchase_price}]
+            consumed = await _batches.consume_fifo(user["sub"], med["id"], it.quantity)
+            # Weighted cost = Σ(batch cost × qty taken)
+            weighted_cost = sum(u["purchase_price"] * u["taken"] for u in consumed)
+            avg_cost = round(weighted_cost / max(1, it.quantity), 4)
             sold_items.append({
                 "medicine_id": med["id"],
                 "name": med.get("name"),
                 "quantity": it.quantity,
                 "selling_price": unit_price,
-                "purchase_price": unit_cost,
+                "purchase_price": avg_cost,       # weighted-avg for reporting
+                "fifo_batches": consumed,         # audit: which batches were hit
+                "cost_total": round(weighted_cost, 2),
             })
+            # Mirror total stock on legacy medicine doc for backward compat UI
+            new_total = await _batches.get_total_stock(user["sub"], med["id"])
             await _db.medicines.update_one(
-                {"id": med["id"]}, {"$inc": {"quantity": -it.quantity, "stock": -it.quantity}},
+                {"id": med["id"]}, {"$set": {"quantity": new_total, "stock": new_total}},
             )
 
         totals = _sale_totals(sold_items)
@@ -396,10 +405,12 @@ def install_routes(require_role):
     # ---------------- BUY v2 with cost/selling separation ---------------
     @router_accounting.post("/medicines/buy-v2")
     async def _buy_v2(data: BuyExtendedIn, user: dict = Depends(require_role("pharmacy"))):
-        """Extended buy that stores BOTH purchase_price and selling_price on the
-        medicine. Keeps backward compat with /medicines/buy (which stored only price)."""
-        # Import _parse_expiry lazily to avoid circular import
+        """Extended buy that creates a NEW inventory batch on every purchase for
+        FIFO accounting. If a medicine with the same barcode/name already exists,
+        we still reuse the medicine record (updating the visible selling_price)
+        but always append a new batch tagged with this purchase's cost + expiry."""
         import server as _s
+        import batches as _batches
         expiry_iso = _s._parse_expiry(data.expiry_date)
 
         query: Dict[str, Any] = {"pharmacy_id": user["sub"]}
@@ -409,39 +420,43 @@ def install_routes(require_role):
             existing = await _db.medicines.find_one({**query, "name": data.name}, {"_id": 0})
 
         if existing:
-            new_qty = existing.get("quantity", 0) + data.quantity
-            updates: Dict[str, Any] = {
-                "quantity": new_qty,
-                "stock": new_qty,  # keep in sync
-                "price": data.selling_price,
-                "purchase_price": data.purchase_price,
-            }
+            med_id = existing["id"]
+            # Update visible selling price (latest wins) + image/expiry
+            updates: Dict[str, Any] = {"price": data.selling_price,
+                                       "purchase_price": data.purchase_price}
             if data.image_base64:
                 updates["image_base64"] = data.image_base64
             if expiry_iso:
                 prev = existing.get("expiry_date")
                 updates["expiry_date"] = expiry_iso if (not prev or expiry_iso < prev) else prev
-            await _db.medicines.update_one({"id": existing["id"]}, {"$set": updates})
-            existing.update(updates)
-            existing.pop("_id", None)
-            return existing
+            await _db.medicines.update_one({"id": med_id}, {"$set": updates})
+        else:
+            med_id = str(uuid.uuid4())
+            await _db.medicines.insert_one({
+                "id": med_id, "pharmacy_id": user["sub"],
+                "name": data.name.strip(),
+                "barcode": (data.barcode or "").strip() or None,
+                "quantity": 0, "stock": 0,   # batches govern the real total
+                "price": data.selling_price,
+                "purchase_price": data.purchase_price,
+                "image_base64": data.image_base64,
+                "expiry_date": expiry_iso,
+                "created_at": _now_iso(),
+            })
 
-        doc = {
-            "id": str(uuid.uuid4()),
-            "pharmacy_id": user["sub"],
-            "name": data.name.strip(),
-            "barcode": (data.barcode or "").strip() or None,
-            "quantity": data.quantity,
-            "stock": data.quantity,
-            "price": data.selling_price,
-            "purchase_price": data.purchase_price,
-            "image_base64": data.image_base64,
-            "expiry_date": expiry_iso,
-            "created_at": _now_iso(),
-        }
-        await _db.medicines.insert_one(doc.copy())
-        doc.pop("_id", None)
-        return doc
+        # NEW BATCH — every purchase creates its own audit row
+        batch = await _batches.create_batch(
+            user["sub"], med_id, data.purchase_price, data.quantity,
+            expiry_date=expiry_iso,
+        )
+
+        # Refresh total stock (sum of all batches remaining)
+        new_total = await _batches.get_total_stock(user["sub"], med_id)
+        await _db.medicines.update_one(
+            {"id": med_id}, {"$set": {"quantity": new_total, "stock": new_total}},
+        )
+        med = await _db.medicines.find_one({"id": med_id}, {"_id": 0})
+        return {"medicine": med, "batch": batch, "total_stock": new_total}
 
     # ---------------- ACCOUNTING SUMMARY ---------------------------------
     @router_accounting.get("/accounting/summary")

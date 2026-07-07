@@ -247,19 +247,25 @@ def install_routes(require_role):
                               {"received_at": _now_iso(),
                                "completed_at": _now_iso()},
                               user["sub"])
-        # Restore stock at pharmacy for tracked medicines
+        # Restore stock at pharmacy for tracked medicines (via batch restoration)
+        import batches as _batches
         restored = 0
         for it in r.get("items", []):
             mid = it.get("medicine_id")
             qty = int(it.get("quantity", 0) or 0)
             if not mid or qty <= 0:
                 continue
-            res = await _db.medicines.update_one(
-                {"id": mid, "pharmacy_id": r["pharmacy_id"]},
-                {"$inc": {"quantity": qty, "stock": qty}},
-            )
-            if res.matched_count:
-                restored += qty
+            try:
+                added = await _batches.restore_batches(r["pharmacy_id"], mid, qty)
+                restored += added
+                # Refresh mirror on medicine doc
+                new_total = await _batches.get_total_stock(r["pharmacy_id"], mid)
+                await _db.medicines.update_one(
+                    {"id": mid, "pharmacy_id": r["pharmacy_id"]},
+                    {"$set": {"quantity": new_total, "stock": new_total}},
+                )
+            except Exception:
+                logger.exception("Batch restore failed for medicine %s", mid)
         # Record credit adjustment (financial memo — pharmacy is owed this amount)
         await _db.return_credits.insert_one({
             "id": str(uuid.uuid4()),

@@ -1390,6 +1390,21 @@ returns_mod.init(db, require_role, notif_mod=notif_mod, accounting_mod=acc_mod)
 returns_mod.install_routes(require_role)
 app.include_router(returns_mod.router_returns)
 
+# ============== FIFO Batch Inventory Module ==============
+import batches as batches_mod  # noqa: E402
+batches_mod.init(db, require_role)
+batches_mod.install_routes(require_role)
+app.include_router(batches_mod.router_batches)
+
+
+@app.on_event("startup")
+async def _run_batches_migration():
+    try:
+        result = await batches_mod.migrate_legacy_medicines(db)
+        logger.info("Batches migration: %s", result)
+    except Exception:
+        logger.exception("Batches migration failed")
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
