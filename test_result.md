@@ -1379,3 +1379,26 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Push Notifications — 11/11 pytest passing.
+        - In-app store: /api/admin/notifications/send delivers to all
+          matching users; DB rows visible via /api/notifications.
+        - Backend logs correctly show `Emergent push: 401 unauthorized
+          (EMERGENT_PUSH_KEY placeholder or invalid)` — proves the relay
+          IS wired but blocked by placeholder key (expected in dev).
+        - /api/register-push returns 201 {status:queued} (no 500).
+        - History + audience-summary shapes correct; idempotency (each
+          send = new batch_id); preferences respected.
+        - Frontend static review passed against playbook (module-scope
+          handler + channel, tap listeners with cleanup, native token,
+          register on signIn AND cold-start hydration).
+        NO BUG. Real-device delivery requires `Publish` → deploy →
+        native build so the pipeline substitutes EMERGENT_PUSH_KEY.
+    - agent: "main"
+      message: |
+        Added cold-start push re-registration in src/auth.tsx (playbook
+        gap: tokens rotate → must re-register on every app open).
+        Rest of implementation matches the emergent-push playbook 1:1.
