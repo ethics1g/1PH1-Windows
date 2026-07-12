@@ -1442,3 +1442,21 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Bug FIXED and verified. New endpoint GET /api/pharmacy/orders/{id}
+        works (200/404/403/401 all correct). Backend 48/48 pytest pass
+        (5 new + 43 regression). Frontend E2E: tap "طلب إرجاع" on 8
+        completed orders — screen loads items every time, no more stuck
+        spinner. Submit returned 400 on this specific seeded pharmacy
+        because the prior test suites had already used all returnable
+        line quotas (61 pending returns exist). Business validation, not
+        a regression — pytest with a fresh line still produces 201.
+    - agent: "main"
+      message: |
+        Added missing GET /api/pharmacy/orders/{order_id}. The
+        return-creation screen was stuck on the loader because the fetch
+        400/404'd silently. Endpoint scoped to pharmacy owner; supplier
+        role gets 403 via require_role.
