@@ -2237,6 +2237,18 @@ async def pharmacy_orders(status: Optional[str] = None, skip: int = 0, limit: in
     return docs
 
 
+@api_router.get("/pharmacy/orders/{order_id}")
+async def pharmacy_order_detail(order_id: str,
+                                user: dict = Depends(require_role("pharmacy"))):
+    """Return a single pharmacy order (used by the return-creation screen)."""
+    doc = await db.orders.find_one(
+        {"id": order_id, "pharmacy_id": user["sub"]}, {"_id": 0},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="الطلبية غير موجودة")
+    return doc
+
+
 @api_router.get("/supplier/orders")
 async def supplier_orders(status: Optional[str] = None, skip: int = 0, limit: int = 100,
                          user: dict = Depends(require_role("supplier"))):

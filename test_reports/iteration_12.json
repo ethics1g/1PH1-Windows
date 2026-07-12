@@ -1,0 +1,37 @@
+{
+  "summary": "Verified fix for the bug 'cannot create a return on the order in my orders tab'. Root cause was the missing GET /api/pharmacy/orders/{order_id} endpoint that the return-creation screen calls to hydrate the order — without it the screen stayed on the ActivityIndicator. Backend: added 5 new pytest cases (/app/backend/tests/test_pharmacy_order_detail.py) — ALL PASS: (a) GET /api/pharmacy/orders/{id} returns 200 with id/status/items/supplier_name/total, (b) bogus id returns 404 with Arabic detail 'الطلبية غير موجودة', (c) supplier role gets 403 (not 500) via require_role('pharmacy'), (d) unauthenticated gets 401/403, (e) mini end-to-end flow: pharmacy login → GET order detail → POST /api/returns with medicine_id=null (mimics UI) → 201 with id+total → GET /api/returns lists the new return. Regression on returns_flow (25 tests) + returns_exploratory (18 tests) = 43/43 PASSED. Frontend E2E on http://localhost:3000 with mobile viewport 390x844: logged in as 07700000001/pass123, drawer→طلباتي, tapped btn-return-{id} on 8 different completed orders → EVERY tap produced GET /api/pharmacy/orders/{id}=200 AND rendered the item list with ret-toggle-* switches and btn-submit-return (spinner is definitively NOT stuck anymore). Full UI submit via btn-submit-return produced HTTP 400 on all 8 orders — this is EXPECTED business validation ('الكمية المطلوبة أكبر من المتاح للإرجاع'): every order on this seeded pharmacy already has its per-line return quota exhausted from prior regression runs (61 pending returns badge visible in the UI, الرواجع tab shows dozens of existing returns). The equivalent POST via my pytest suite with fresh order-item iteration succeeded (201 + total + visible in GET /api/returns). No regressions. No mocked APIs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pharmacy_order_detail.py",
+    "/app/test_reports/pytest/pytest_pharmacy_order_detail.xml",
+    "/app/test_reports/pytest/pytest_returns_regression.xml"
+  ],
+  "action_items": [
+    "No action required — the reported bug is FIXED. The new endpoint returns the expected 200/404/403 codes and the UI can now hydrate the order details, render items, and reach the submit button.",
+    "Optional/nice-to-have: the seeded pharmacy account 07700000001 has 61 pending returns from prior tests. Consider a periodic cleanup job or a test-data reset script so QA can exercise the full submit path in the web preview without hitting 'returnable quantity exhausted' 400s."
+  ],
+  "critical_code_review_comments": [
+    "server.py::pharmacy_order_detail (lines 2240-2249) — implementation is minimal & correct: excludes MongoDB _id, uses proper 404 with Arabic detail, and role guard via require_role('pharmacy') gives clean 403 for suppliers. Good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pharmacy_order_detail.py (new — 5 pytest cases)"
+  ],
+  "success_rate": {
+    "backend": "100% (5/5 new + 43/43 regression = 48/48)",
+    "frontend": "100% for the reported bug (spinner no longer stuck on 8/8 orders tested); full-submit path not re-verified via UI due to depleted seed-data return quotas (business-rule 400, not a bug — pytest confirmed the POST path independently)"
+  },
+  "seed_data_creation": "One TEST_ return row was created by pytest TestReturnsMiniFlow on an order still having returnable stock (reason='damaged', notes='TEST_ منتج تالف'). It persists in the returns collection under pharmacy_id=6c146022-ff6b-409a-bb3b-de7afb924cd5 as status='pending'.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run: `EXPO_PUBLIC_BACKEND_URL=https://pharma-checkout-8.preview.emergentagent.com pytest /app/backend/tests/test_pharmacy_order_detail.py /app/backend/tests/test_returns_flow.py /app/backend/tests/test_returns_exploratory.py -v`. The mini-flow test iterates through the pharmacy's orders and items to find one that still has returnable stock, so it will keep working even after several runs — until the whole seed is fully consumed, at which point the test skips (does not fail).",
+  "rca_of_issue": "Reported bug: 'اكو مشكله بطلب الرواجع لم أستطع عمل راجع على الطلبيه في خانة طلباتي' (cannot create a return on the order in the My-Orders tab). RCA: The pharmacy returns-creation screen /returns/create/[orderId].tsx calls apiFetch('/pharmacy/orders/{orderId}') to hydrate the order (see line 34-42) then renders `<ActivityIndicator>` until `order` is set. Backend had `GET /api/pharmacy/orders` (list) but was missing `GET /api/pharmacy/orders/{order_id}` (detail), so the fetch returned 404, `order` stayed null, and the spinner appeared frozen. Mitigation applied by main agent: added `pharmacy_order_detail` handler in /app/backend/server.py:2240-2249 returning the pharmacy's own order (or 404 with Arabic detail). Verified: (1) the new endpoint responds 200 for every tapped order, (2) the UI now renders the item list and submit button, (3) full pytest-driven end-to-end returns flow succeeds. Fix is complete."
+}

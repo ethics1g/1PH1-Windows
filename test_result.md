@@ -1402,3 +1402,43 @@ agent_communication:
         Added cold-start push re-registration in src/auth.tsx (playbook
         gap: tokens rotate → must re-register on every app open).
         Rest of implementation matches the emergent-push playbook 1:1.
+
+# =====================================================================
+# ITERATION: RETURNS UI BUG — cannot open return-create screen — 2026-07
+# =====================================================================
+backend:
+  - task: "GET /api/pharmacy/orders/{order_id} — single order detail"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "main"
+        -comment: |
+          User reported "cannot create a return on the order in my orders tab".
+          Root cause: /app/frontend/app/returns/create/[orderId].tsx calls
+          GET /pharmacy/orders/{order_id} to load the order but that route
+          did not exist (only the LIST /pharmacy/orders was defined). Result:
+          the screen stayed on the ActivityIndicator forever.
+          Fix: added `GET /api/pharmacy/orders/{order_id}` (scoped to the
+          authenticated pharmacy), returning 404 if the order is not owned
+          by that pharmacy. Verified locally: 200 with items+status.
+frontend:
+  - task: "returns/create/[orderId] loads order and submits"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/returns/create/[orderId].tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+
+test_plan:
+  current_focus:
+    - "GET /api/pharmacy/orders/{order_id} — single order detail"
+    - "returns/create/[orderId] loads order and submits"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
