@@ -1,0 +1,31 @@
+{
+  "summary": "Verified UI terminology rename (صيدلية/مذخر → متجر/مورد) on the two auth screens and confirmed backend contract (role=pharmacy/supplier) is unchanged. Login screen subtitle now reads 'نظام ذكي للمتاجر والموردين'. Register screen role selector shows exactly 'متجر' (default) and 'مورد'; name label toggles between 'اسم المتجر'/'اسم المورد' with placeholders 'مثال: متجر النور'/'مثال: مورد الأمين'; address label toggles between 'عنوان المتجر'/'عنوان المورد'. Ionicons storefront + business render correctly. /forgot-password shows 'متجر' and 'مورد' role buttons. Regex scan of both files finds ZERO occurrences of old terms (صيدلية / مذخر / مذاخر). Backend sanity: POST /api/pharmacy/register and /api/supplier/register both return 200 with a JWT whose decoded payload role='pharmacy' or 'supplier' respectively; /api/auth/login returns the same roles — backend contract fully intact.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_terminology_sanity.py",
+    "/app/test_reports/pytest/pytest_auth_terminology.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "login.tsx and forgot-password.tsx correctly change ONLY UI strings; the API paths (/pharmacy/register, /supplier/register) and role state values ('pharmacy'|'supplier') remain untouched, so backend contract is preserved as required.",
+    "testIDs (role-pharmacy, role-supplier, fp-role-pharmacy, fp-role-supplier, mode-register, input-name, input-address) all present and functional for future regression tests."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_terminology_sanity.py (new — 2 sanity tests)"
+  ],
+  "success_rate": {"backend": "100% (2/2)", "frontend": "100% (all 5 verification points)"},
+  "seed_data_creation": "Created two ephemeral accounts via /api/pharmacy/register and /api/supplier/register with unique timestamped phone numbers (07799995xxxxx, 07788885xxxxx) for backend contract verification. Password: testpw123. Safe to leave (isolated test data).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "IMPORTANT ENVIRONMENT NOTE: On starting this iteration the Python venv was corrupted — pydantic_core, cryptography, pypdfium2 and Pillow all had missing .so files, causing backend to crash-loop (public URL returned 502). I fixed by `pip install --force-reinstall` for each affected package (pydantic_core==2.41.5, cryptography, pypdfium2, Pillow). Backend recovered and all endpoints work. This corruption was PRE-EXISTING and unrelated to the terminology change. If it recurs, the same reinstall recipe restores service. Requirements.txt versions were preserved.",
+  "rca_of_issue": "N/A — user's requested change (UI terminology only) was implemented correctly by main agent. Verified via (a) grep of both files (zero old terms), (b) Playwright DOM inspection of live web preview (all new strings present, all old strings absent, icons render), (c) pytest against public URL confirming JWT role claim is still 'pharmacy'/'supplier' — backend contract intact."
+}

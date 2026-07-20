@@ -51,10 +51,10 @@ export default function ForgotPassword() {
 
           <View style={styles.roleSwitch}>
             <TouchableOpacity testID="fp-role-pharmacy" style={[styles.roleBtn, role === 'pharmacy' && styles.roleActive]} onPress={() => setRole('pharmacy')}>
-              <Text style={[styles.roleTxt, role === 'pharmacy' && styles.roleTxtActive]}>صيدلية</Text>
+              <Text style={[styles.roleTxt, role === 'pharmacy' && styles.roleTxtActive]}>متجر</Text>
             </TouchableOpacity>
             <TouchableOpacity testID="fp-role-supplier" style={[styles.roleBtn, role === 'supplier' && styles.roleActive]} onPress={() => setRole('supplier')}>
-              <Text style={[styles.roleTxt, role === 'supplier' && styles.roleTxtActive]}>مذخر</Text>
+              <Text style={[styles.roleTxt, role === 'supplier' && styles.roleTxtActive]}>مورد</Text>
             </TouchableOpacity>
           </View>
 

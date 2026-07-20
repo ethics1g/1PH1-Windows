@@ -88,7 +88,7 @@ export default function Login() {
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.logoWrap}>
             <Image source={require('../assets/branding/logo.png')} style={styles.logoImg} resizeMode="contain" />
-            <Text style={styles.subtitle}>نظام ذكي للصيدليات والمذاخر</Text>
+            <Text style={styles.subtitle}>نظام ذكي للمتاجر والموردين</Text>
           </View>
 
           {mode === 'register' && (
@@ -98,8 +98,8 @@ export default function Login() {
                 style={[styles.roleBtn, role === 'pharmacy' && styles.roleBtnActive]}
                 onPress={() => setRole('pharmacy')}
               >
-                <Ionicons name="medical" size={18} color={role === 'pharmacy' ? '#fff' : colors.textSecondary} />
-                <Text style={[styles.roleTxt, role === 'pharmacy' && styles.roleTxtActive]}>صيدلية</Text>
+                <Ionicons name="storefront" size={18} color={role === 'pharmacy' ? '#fff' : colors.textSecondary} />
+                <Text style={[styles.roleTxt, role === 'pharmacy' && styles.roleTxtActive]}>متجر</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 testID="role-supplier"
@@ -107,7 +107,7 @@ export default function Login() {
                 onPress={() => setRole('supplier')}
               >
                 <Ionicons name="business" size={18} color={role === 'supplier' ? '#fff' : colors.textSecondary} />
-                <Text style={[styles.roleTxt, role === 'supplier' && styles.roleTxtActive]}>مذخر</Text>
+                <Text style={[styles.roleTxt, role === 'supplier' && styles.roleTxtActive]}>مورد</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -131,13 +131,13 @@ export default function Login() {
 
           {mode === 'register' && (
             <View style={styles.field}>
-              <Text style={styles.label}>{role === 'pharmacy' ? 'اسم الصيدلية' : 'اسم المذخر'}</Text>
+              <Text style={styles.label}>{role === 'pharmacy' ? 'اسم المتجر' : 'اسم المورد'}</Text>
               <TextInput
                 testID="input-name"
                 style={styles.input}
                 value={name}
                 onChangeText={setName}
-                placeholder={role === 'pharmacy' ? 'مثال: صيدلية الشفاء' : 'مثال: مذخر النور'}
+                placeholder={role === 'pharmacy' ? 'مثال: متجر النور' : 'مثال: مورد الأمين'}
                 placeholderTextColor={colors.textMuted}
                 textAlign="right"
               />
@@ -174,7 +174,7 @@ export default function Login() {
 
           {mode === 'register' && (
             <View style={styles.field}>
-              <Text style={styles.label}>{role === 'pharmacy' ? 'عنوان الصيدلية' : 'عنوان المذخر'}</Text>
+              <Text style={styles.label}>{role === 'pharmacy' ? 'عنوان المتجر' : 'عنوان المورد'}</Text>
               <TextInput
                 testID="input-address"
                 style={styles.input}
