@@ -1518,3 +1518,18 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Iteration 15 — Accounting-lock chain COMPLETE.
+        Backend 16 tests (9 unlock + 7 me/password) all green.
+        E2E confirmed: change pw in settings → auto-becomes accounting
+        unlock code. Signout/signin resets flag correctly. Old pw no
+        longer accepted anywhere.
+    - agent: "main"
+      message: |
+        Added PATCH /api/me/password (was called by /settings/password
+        but returned 404). Same hashing/collection routing as login;
+        Arabic error messages for wrong-current, short-new, same-as-current.
+        Flag ties the whole "one code unlocks both" experience together.
