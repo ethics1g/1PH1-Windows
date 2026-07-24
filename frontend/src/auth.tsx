@@ -71,6 +71,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     setRole(null);
     setUser(null);
+    // Reset gated sections so a different user re-authenticates
+    try {
+      const { resetAccountingLock } = await import('./accountingLock');
+      resetAccountingLock();
+    } catch {}
   };
 
   return (

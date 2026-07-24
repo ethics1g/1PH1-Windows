@@ -4,10 +4,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import ScreenHeader from '../../src/ScreenHeader';
 import { colors } from '../../src/theme';
 import { apiFetch, useAuth } from '../../src/auth';
+import { isAccountingUnlocked } from '../../src/accountingLock';
 
 export default function AccountingDashboard() {
   const router = useRouter();
@@ -15,6 +16,22 @@ export default function AccountingDashboard() {
   const [summary, setSummary] = useState<any>(null);
   const [inv, setInv] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [gate, setGate] = useState<'checking' | 'unlocked'>('checking');
+
+  // Gate the section: whenever this screen becomes focused (including
+  // returning to it after a deep-link redirect from /accounting/unlock)
+  // we re-check the in-memory unlock flag.
+  useFocusEffect(
+    useCallback(() => {
+      if (isAccountingUnlocked()) {
+        setGate('unlocked');
+      } else {
+        setGate('checking');
+        // Small delay so the transition looks less jarring
+        router.replace('/accounting/unlock' as any);
+      }
+    }, [router])
+  );
 
   const load = useCallback(async () => {
     try {
@@ -26,11 +43,11 @@ export default function AccountingDashboard() {
     } catch (e) { console.log('load err', e); }
   }, [token]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (gate === 'unlocked') { load(); } }, [gate, load]);
 
   const fmt = (n: number) => (n || 0).toLocaleString('en-US') + ' د.ع';
 
-  if (!summary || !inv) {
+  if (gate !== 'unlocked' || !summary || !inv) {
     return <SafeAreaView style={styles.safe}><ActivityIndicator style={{ marginTop: 60 }} size="large" color={colors.primary} /></SafeAreaView>;
   }
 

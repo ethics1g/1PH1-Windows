@@ -1460,3 +1460,61 @@ agent_communication:
         return-creation screen was stuck on the loader because the fetch
         400/404'd silently. Endpoint scoped to pharmacy owner; supplier
         role gets 403 via require_role.
+
+# =====================================================================
+# ITERATION: ACCOUNTING SECTION LOCK — PIN KEYPAD — 2026-07
+# =====================================================================
+backend:
+  - task: "POST /api/auth/verify-password (gate for sensitive sections)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          New endpoint validates a supplied password against the CURRENT
+          JWT user's stored hash. Returns 200 {ok:true} on match, 401 with
+          Arabic detail "رمز غير صحيح" on any mismatch (empty, wrong,
+          different-role). Supports pharmacy/supplier/admin roles.
+          Verified via curl: pass123→200, wrong→401, empty→401, unauth→401.
+
+frontend:
+  - task: "Accounting unlock keypad screen (/accounting/unlock)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/accounting/unlock.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          New elegant unlock screen: 1PH1 logo card, "أدخل رمز الأمان"
+          title, "لفتح قسم الحسابات" subtitle, big 3x4 numeric keypad
+          (0-9 + backspace + submit ✓), animated shake + red border on
+          wrong PIN, "رمز غير صحيح" message (nothing more). Uses
+          expo-haptics for tactile feedback on native.
+
+          The in-memory `isAccountingUnlocked` flag (src/accountingLock.ts)
+          resets on logout (signOut) and on app restart. Every entry into
+          /accounting checks this flag via useFocusEffect and redirects
+          to /accounting/unlock when locked.
+
+          The unlock code IS the user's login password — so any change
+          via settings/password automatically becomes the new unlock
+          code (no separate storage). Since the keypad is NUMERIC-ONLY
+          per user request, the login password must be numeric for the
+          unlock to succeed; the app already had this UX assumption.
+
+test_plan:
+  current_focus:
+    - "POST /api/auth/verify-password (gate for sensitive sections)"
+    - "Accounting unlock keypad screen (/accounting/unlock)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"

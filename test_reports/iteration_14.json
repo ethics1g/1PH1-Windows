@@ -1,0 +1,47 @@
+{
+  "summary": "Verified the new 'Accounting section lock' feature end-to-end (backend + frontend). Backend endpoint POST /api/auth/verify-password works correctly for pharmacy, supplier, and admin: correct pw → 200 {ok:true}; wrong/empty pw → 401 with Arabic detail 'رمز غير صحيح'; missing Authorization header → 401; cross-account passwords are rejected (supplier account rejects pharmacy pw). Password rotation is honoured — after DB-level rotation of pharmacy pw from pass123 → 123456, verify-password rejects pass123 and accepts 123456 (proving the unlock code == login pw, no separate storage). All 9 feature-specific pytest cases pass (test_accounting_unlock.py). Frontend E2E: login → tap tile-accounting redirects to /accounting/unlock; screen renders logo, title 'أدخل رمز الأمان', subtitle 'لفتح قسم الحسابات', 3x4 keypad key-0..key-9 + key-back + key-submit, and pin-box placeholder '••••'. Wrong PIN 9999 → pin-error appears with exact text 'رمز غير صحيح', input clears, still on /accounting/unlock. Correct PIN 123456 (after temporary DB rotation) → /accounting shows all four cards (ربح اليوم, ربح الشهر, قيمة المخزون, إجمالي الديون). Session persistence: SPA nav back to /home and re-tap tile does NOT re-prompt. Sign out → sign in → tap tile does re-prompt (unlock flag cleared by resetAccountingLock in signOut). Pharmacy pw restored to pass123 after tests. No blocking issues found in the feature.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PATCH /me/password", "issue": "Endpoint is called by frontend app/settings/password.tsx (line 27) but is NOT implemented in backend/server.py — no route handler exists for this path. Users tapping 'تغيير كلمة السر' from settings will get a 404. Out of scope of the accounting-lock review but is directly relevant because the review depended on this path to rotate passwords — we had to rotate via MongoDB directly. Recommend implementing PATCH /me/password (current_password, new_password) which validates current pw and updates pharmacies/suppliers based on role."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/accounting/unlock", "issues": ["Keypad is numeric-only by design (per user requirement). Seed pharmacy pw 'pass123' contains letters and CANNOT be entered via this keypad. This is user-facing: pharmacies MUST set a numeric login password before this section is usable. Suggest documenting this in onboarding, or forcing a numeric-pw policy at register time, or falling back to a text field for alphanumeric passwords."]}
+    ],
+    "react_native_issues": [
+      {"component": "unlock.tsx animated shake + web warning", "issue": "useNativeDriver: true causes web console warning 'Animated: useNativeDriver is not supported... falling back to JS-based animation'. Harmless on native; on web it degrades gracefully. Consider Platform.OS !== 'web' for useNativeDriver to suppress the warning. Reference: /app/frontend/app/accounting/unlock.tsx:46-52"}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_accounting_unlock.py",
+    "/app/test_reports/pytest/pytest_accounting_unlock.xml"
+  ],
+  "action_items": [
+    "(optional) Implement PATCH /api/me/password on backend to match the frontend settings/password.tsx call — this bug pre-exists but blocks the settings 'change password' flow.",
+    "(optional) Consider Platform.OS !== 'web' guard for useNativeDriver in unlock.tsx shake animation to suppress the web warning.",
+    "(optional) UX guidance: enforce a numeric login password (or add secondary numeric PIN) so the accounting-lock keypad can express it."
+  ],
+  "critical_code_review_comments": [
+    "unlock.tsx correctly uses testID on all interactive elements (key-0..key-9, key-back, key-submit, pin-box, pin-error, btn-cancel).",
+    "accountingLock.ts state is module-scoped; correctly non-persistent (resets on JS bundle restart) and correctly reset via resetAccountingLock in auth.signOut.",
+    "accounting/index.tsx uses useFocusEffect + isAccountingUnlocked() and router.replace('/accounting/unlock') on failure — cannot be bypassed via deep link because the check runs on every focus.",
+    "verify-password endpoint correctly hashes-and-compares (constant time via string equality of sha256 hex) and returns generic 'رمز غير صحيح' Arabic error (no timing/existence leak).",
+    "verify-password requires JWT auth via Depends(get_current_user); passwords never leave the server unhashed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_accounting_unlock.py (new pytest suite, 9 tests, 100% pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (9/9 feature tests)",
+    "frontend": "100% (5/5 E2E steps: login, unlock render, wrong-pin error, happy path unlock, session persistence, logout-clears-flag)"
+  },
+  "seed_data_creation": "Temporarily rotated pharmacy 07700000001 password to '123456' via MongoDB direct update during frontend E2E, then restored to 'pass123' at the end. Sanity-checked with /api/pharmacy/login → 200.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 9 accounting-unlock backend tests reside in /app/backend/tests/test_accounting_unlock.py. Pre-existing test failures in test_optimize.py, test_password_reset.py, test_admin.py, test_pharmacy_api.py are unrelated: they stem from stale test fixtures that register suppliers without the now-required 'region' field (422 errors). Not caused by this feature. Pharmacy seed pw is restored to 'pass123'.",
+  "rca_of_issue": "N/A — feature works as specified. Only pre-existing issue found: PATCH /me/password missing on backend (used by settings screen)."
+}

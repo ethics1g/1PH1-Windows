@@ -626,6 +626,30 @@ async def me(user: dict = Depends(get_current_user)):
     return {"role": user["role"], "user": doc}
 
 
+class VerifyPasswordIn(BaseModel):
+    password: str
+
+
+@api_router.post("/auth/verify-password")
+async def auth_verify_password(data: VerifyPasswordIn,
+                               user: dict = Depends(get_current_user)):
+    """Verify a password matches the CURRENT authenticated user's login password.
+    Used to gate sensitive sections of the app (e.g. accounting unlock)
+    with the same credential as the login. Returns 200 on match, 401 otherwise
+    with no additional details."""
+    if user["role"] == "pharmacy":
+        doc = await db.pharmacies.find_one({"id": user["sub"]}, {"_id": 0})
+    elif user["role"] == "supplier":
+        doc = await db.suppliers.find_one({"id": user["sub"]}, {"_id": 0})
+    elif user["role"] == "admin":
+        doc = await db.admins.find_one({"id": user["sub"]}, {"_id": 0})
+    else:
+        doc = None
+    if not doc or doc.get("password") != hash_password(data.password or ""):
+        raise HTTPException(status_code=401, detail="رمز غير صحيح")
+    return {"ok": True}
+
+
 # ---------- Medicines (Pharmacy) ----------
 @api_router.get("/medicines")
 async def list_medicines(skip: int = 0, limit: int = 200, user: dict = Depends(require_role("pharmacy"))):
