@@ -626,6 +626,40 @@ async def me(user: dict = Depends(get_current_user)):
     return {"role": user["role"], "user": doc}
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@api_router.patch("/me/password")
+async def me_change_password(data: ChangePasswordIn,
+                              user: dict = Depends(get_current_user)):
+    """Change the current user's login password.
+    The same password is used by the accounting-unlock keypad, so any
+    change here automatically becomes the new unlock code."""
+    new_pw = (data.new_password or "").strip()
+    if len(new_pw) < 6:
+        raise HTTPException(status_code=400,
+                            detail="كلمة السر الجديدة يجب أن تكون 6 أحرف على الأقل")
+    if user["role"] == "pharmacy":
+        col = db.pharmacies
+    elif user["role"] == "supplier":
+        col = db.suppliers
+    elif user["role"] == "admin":
+        col = db.admins
+    else:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    doc = await col.find_one({"id": user["sub"]}, {"_id": 0})
+    if not doc or doc.get("password") != hash_password(data.current_password or ""):
+        raise HTTPException(status_code=401, detail="كلمة السر الحالية غير صحيحة")
+    if doc.get("password") == hash_password(new_pw):
+        raise HTTPException(status_code=400,
+                            detail="يجب أن تختلف كلمة السر الجديدة عن الحالية")
+    await col.update_one({"id": user["sub"]},
+                          {"$set": {"password": hash_password(new_pw)}})
+    return {"ok": True}
+
+
 class VerifyPasswordIn(BaseModel):
     password: str
 
