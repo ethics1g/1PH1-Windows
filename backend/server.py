@@ -1455,6 +1455,13 @@ batches_mod.install_routes(require_role)
 app.include_router(batches_mod.router_batches)
 
 
+# ============== Paper Orders (AI image scanning) ==============
+import paper_orders as paper_orders_mod  # noqa: E402
+paper_orders_mod.init(db)
+paper_orders_mod.install_routes(require_role)
+app.include_router(paper_orders_mod.router_paper_orders)
+
+
 @app.on_event("startup")
 async def _run_batches_migration():
     try:

@@ -1664,3 +1664,53 @@ agent_communication:
         list. `medicines.expiry_date` is now a mirror recomputed from
         active batches only. Added on-demand scan endpoint + initial
         startup scan so users see alerts immediately.
+
+# =====================================================================
+# ITERATION: AI PAPER-ORDER SCAN + SUPPLIER DEBTS TAB — 2026-07
+# =====================================================================
+backend:
+  - task: "Paper order scanning + archiving + supplier debt ledger"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/paper_orders.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          New module `paper_orders.py` wires up:
+          * POST /api/orders/scan-image → Gemini 3 Flash extracts items + metadata
+          * POST /api/orders/paper → commits reviewed order:
+              - each line calls the SAME `_batches.create_batch` used by
+                /medicines/buy-v2 (medicine reused if exists, else created)
+              - refreshes stock mirror + earliest active expiry
+              - archives original image + metadata in `paper_orders` col
+              - adds a `supplier_ledger` DEBIT if remaining > 0 (so the
+                existing debts UI picks it up automatically)
+          * GET /api/orders/paper (list) + /api/orders/paper/{id} (detail)
+          * POST /api/orders/paper/{id}/pay (payment installments)
+
+          Existing modules NOT touched: inventory (medicines/buy-v2),
+          FIFO consumption, existing marketplace orders, customer debts.
+
+          Live smoke test: commit + list + partial + full payment all
+          worked; medicines created via batches with correct expiry.
+
+frontend:
+  - task: "Scan invoice screen + paper orders list + debts supplier tab"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/orders/scan.tsx, /app/frontend/app/orders/paper.tsx, /app/frontend/app/orders/paper/[id].tsx, /app/frontend/app/buy.tsx, /app/frontend/app/customers/index.tsx, /app/frontend/src/AppDrawer.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+
+test_plan:
+  current_focus:
+    - "Paper order scanning + archiving + supplier debt ledger"
+    - "Scan invoice screen + paper orders list + debts supplier tab"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"

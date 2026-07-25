@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useAuth, apiFetch } from '../src/auth';
 import { colors } from '../src/theme';
 import ScreenHeader from '../src/ScreenHeader';
@@ -13,6 +14,7 @@ import ExpiryDateField from '../src/ExpiryDateField';
 import { normalizeExpiryDate } from '../src/utils/dateUtils';
 
 export default function Buy() {
+  const router = useRouter();
   const { token } = useAuth();
   const [scannerOpen, setScannerOpen] = useState(false);
   const [name, setName] = useState('');
@@ -104,6 +106,20 @@ export default function Buy() {
         <ScreenHeader title="الشراء" subtitle="إضافة دواء جديد للمخزن" />
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <TouchableOpacity
+            testID="btn-scan-invoice"
+            style={styles.invoiceScanBtn}
+            onPress={() => router.push('/orders/scan' as any)}
+            disabled={busy}
+          >
+            <Ionicons name="document-attach" size={22} color="#fff" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.invoiceScanTitle}>رفع صورة طلبية كاملة</Text>
+              <Text style={styles.invoiceScanSub}>الذكاء الاصطناعي يستخرج كل الأدوية دفعة واحدة</Text>
+            </View>
+            <Ionicons name="chevron-back" size={22} color="#fff" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
             testID="btn-buy-scan"
             style={styles.scanBtn}
             onPress={() => setScannerOpen(true)}
@@ -178,6 +194,9 @@ const styles = StyleSheet.create({
   scroll: { padding: 20, paddingBottom: 40 },
   scanBtn: { backgroundColor: colors.secondaryDark, borderRadius: 16, paddingVertical: 16, flexDirection: 'row-reverse', gap: 8, alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
   scanBtnTxt: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  invoiceScanBtn: { backgroundColor: '#7c3aed', borderRadius: 16, paddingVertical: 14, paddingHorizontal: 14, flexDirection: 'row-reverse', gap: 10, alignItems: 'center', marginBottom: 12 },
+  invoiceScanTitle: { color: '#fff', fontSize: 15, fontWeight: '800', textAlign: 'right' },
+  invoiceScanSub: { color: '#ede9fe', fontSize: 11, fontWeight: '600', textAlign: 'right', marginTop: 2 },
   field: { marginBottom: 14 },
   label: { fontSize: 13, color: colors.textSecondary, marginBottom: 6, textAlign: 'right', fontWeight: '700' },
   hint: { fontSize: 11, color: colors.textMuted, marginTop: 6, textAlign: 'right' },

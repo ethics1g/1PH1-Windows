@@ -1,0 +1,39 @@
+{
+  "summary": "Backend E2E verification of AI paper-order scanning + supplier-debts mirror. Wrote /app/backend/tests/test_paper_orders.py with 20 tests covering scenarios A-H: commit → medicines+batches creation with FIFO reuse via _batches.create_batch, expiry mirror on medicines.expiry_date, list projection strips image_base64, detail returns image_base64, payment installments (partial→paid, over-full 400, negative 400), supplier_ledger DEBIT mirror on commit when supplier_id linked, supplier_ledger CREDIT mirror on payment, no ledger entry for free-text supplier_name only, auth guards (unauth 401 / supplier-role 403), and input validation (empty items, empty image, tiny image). ALL 20 tests PASS. Regression suites required by brief also PASS untouched: test_fifo_inventory 10/10, test_returns_flow 25/25, test_batch_expiry 10/10, test_accounting_unlock 9/9 (54/54 total). No changes to inventory/FIFO/customer-debts code. Grand total 74/74. Frontend UI review (static): no deprecated Expo packages (expo-av / expo-barcode-scanner / expo-background-fetch) in /app/frontend/app/orders/*, all files under 700 lines.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_paper_orders.py",
+    "/app/test_reports/pytest/pytest_paper_orders.xml",
+    "/app/test_reports/pytest/pytest_regression_paper_orders.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "paper_orders.py::_commit_paper_order — properly reuses existing medicine by barcode-then-name lookup on same pharmacy_id (matches /medicines/buy-v2 semantics). Expiry mirror update only replaces if new date is earlier (correct FIFO-friendly behaviour). ✓",
+    "paper_orders.py::_pay_paper_order — clamps amount to remaining_before, so overpayment is silently truncated (defensive). Rejects amount<=0 with 400. When remaining_before<=0 it returns 400 'الطلبية مدفوعة بالكامل' — correct.",
+    "paper_orders.py — list endpoint uses projection {'_id':0,'image_base64':0} so payload stays lean (verified in test B). Detail endpoint does return the archived image (verified in test C).",
+    "paper_orders.py — supplier_ledger writes include kind ('paper_order_debit'/'paper_order_payment'), reference_id (=order_id), reference_type='paper_order' — schema is consistent with accounting.py convention and picked up by /accounting/supplier-accounts/{id}.ledger without touching accounting.py. ✓",
+    "paper_orders.py::_scan_image — swallows Gemini failures and returns empty items/metadata. This satisfies the brief (dev-mode 'placeholder' key must not crash) but a production deployment should surface a distinct 503/warning header when the LLM is unreachable so the UI can hint at manual entry.",
+    "paper_orders.py — image_base64 gate (<100 chars → 400) is applied on both /scan-image and /orders/paper; also tolerates data-URL prefix. ✓"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_paper_orders.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (74/74: 20 new paper-orders + 54 regression)",
+    "frontend": "not executed (backend-only request; static code review only)"
+  },
+  "seed_data_creation": "Each test creates its own TEST_PO_MED_*_<unix_ts> medicines so test runs are additive and idempotent. Paper orders remain in DB after the run (not deleted) — safe since they belong to the seeded pharmacy sandbox account.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Endpoints under /api/orders/paper require pharmacy role; /api/orders/scan-image is pharmacy-only (supplier→403). Payment mirror lives in supplier_ledger with reference_type='paper_order' and kinds ('paper_order_debit','paper_order_payment'). To verify balance: GET /api/accounting/supplier-accounts/{supplier_id} → filter ledger by reference_id. Dummy image_base64 = base64('\\x89PNG\\r\\n\\x1a\\n' + b'0123456789abcdef'*200) — ~1400 chars, passes the >100 gate without triggering Gemini (only /scan-image calls the LLM; /orders/paper commits without any LLM call). BASE_URL must be exported: EXPO_PUBLIC_BACKEND_URL=https://pharma-checkout-8.preview.emergentagent.com (from /app/frontend/.env).",
+  "rca_of_issue": "N/A — no bugs found. Design note: paper_orders.image_base64 blobs accumulate in the collection with no size cap. If invoices are photographed at high resolution the collection can bloat quickly; consider adding a compression step in the frontend picker or storing in GridFS. Not in-scope for this task but flagged for main agent."
+}

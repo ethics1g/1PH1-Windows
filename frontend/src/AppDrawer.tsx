@@ -44,6 +44,7 @@ export default function AppDrawer({ visible, onClose }: { visible: boolean; onCl
     { icon: 'settings', label: 'إعدادات الحساب', route: '/settings', testID: 'drawer-settings' },
     { icon: 'key', label: 'تغيير كلمة السر', route: '/settings/password', testID: 'drawer-password' },
     { icon: 'notifications-outline', label: 'تفضيلات الإشعارات', route: '/settings/notifications', testID: 'drawer-notif-prefs' },
+    { icon: 'document-attach', label: 'طلبيات مصورة', route: '/orders/paper', testID: 'drawer-paper-orders', color: '#7c3aed' },
     { icon: 'shield-checkmark', label: 'إشعارات الإدارة', route: '/admin/notifications', testID: 'drawer-admin-notif', adminOnly: true, color: colors.indigo },
     { icon: 'log-out-outline', label: 'تسجيل الخروج', onPress: () => {
         Alert.alert('تسجيل الخروج', 'هل تريد تسجيل الخروج؟', [
