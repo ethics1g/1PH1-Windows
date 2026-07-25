@@ -1647,3 +1647,20 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Batch-based expiry: 72/72 pytest (10 new + 62 regression) all
+        green. Critical guarantee verified — depleted batches never
+        produce or persist alerts. Weekly report dedupes correctly per
+        week_key. `/medicines/expired-list` returns batch breakdown.
+        Sanity 403/401 also correct. No fixes required.
+    - agent: "main"
+      message: |
+        Batch-based expiry management wired: buy-v2 creates a new batch
+        per purchase, sale FIFO consumes oldest first, and depleted
+        batches never surface in the daily/weekly scans or the expired
+        list. `medicines.expiry_date` is now a mirror recomputed from
+        active batches only. Added on-demand scan endpoint + initial
+        startup scan so users see alerts immediately.
