@@ -1714,3 +1714,17 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Paper-Order feature: 20 new pytest + 54 regression = 74/74 pass.
+        Backend contract complete; Gemini extraction stubbed to auth
+        checks only (dev key = placeholder). No regressions in
+        inventory/FIFO/customer-debts. Feature ready to ship.
+    - agent: "main"
+      message: |
+        New module `paper_orders.py` scanned-invoice archive + supplier
+        debt ledger mirror. Frontend: scan/review/list/detail/pay screens
+        + debts screen supplier tab + drawer link. Zero changes to
+        existing inventory/FIFO/customer-debts code paths.
