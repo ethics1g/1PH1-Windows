@@ -724,15 +724,62 @@ def install_routes(require_role):
     # ------------- Expired medicines list (deep-link target) -------------
     @router_notifications.get("/medicines/expired-list")
     async def _expired(user: dict = Depends(require_role("pharmacy"))):
+        """List medicines with at least one EXPIRED batch that still has
+        `remaining_quantity > 0`. Depleted batches are excluded."""
         today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        cursor = _db.medicines.find(
-            {"pharmacy_id": user["sub"],
-             "expiry_date": {"$lte": today_iso, "$ne": None},
-             "stock": {"$gt": 0}},
-            {"_id": 0, "id": 1, "name": 1, "barcode": 1, "expiry_date": 1, "stock": 1, "price": 1},
-        ).sort("expiry_date", 1)
-        items = [m async for m in cursor]
+        pipeline = [
+            {"$match": {"pharmacy_id": user["sub"],
+                         "expiry_date": {"$lte": today_iso, "$ne": None},
+                         "remaining_quantity": {"$gt": 0}}},
+            {"$sort": {"expiry_date": 1}},
+            {"$group": {"_id": "$medicine_id",
+                         "earliest_expiry": {"$first": "$expiry_date"},
+                         "units": {"$sum": "$remaining_quantity"},
+                         "batches": {"$push": {
+                             "batch_id": "$id",
+                             "expiry_date": "$expiry_date",
+                             "remaining_quantity": "$remaining_quantity",
+                         }}}},
+            {"$sort": {"earliest_expiry": 1}},
+        ]
+        med_ids: list = []
+        agg: dict = {}
+        async for r in _db.medicine_batches.aggregate(pipeline):
+            med_ids.append(r["_id"])
+            agg[r["_id"]] = r
+        # Batch-load medicine display fields
+        meds: dict = {}
+        async for m in _db.medicines.find(
+            {"id": {"$in": med_ids}, "pharmacy_id": user["sub"]},
+            {"_id": 0, "id": 1, "name": 1, "barcode": 1, "price": 1},
+        ):
+            meds[m["id"]] = m
+        items = []
+        for mid in med_ids:
+            m = meds.get(mid)
+            if not m:
+                continue
+            row = agg[mid]
+            items.append({
+                "id": m["id"],
+                "name": m.get("name"),
+                "barcode": m.get("barcode"),
+                "price": m.get("price"),
+                "expiry_date": row["earliest_expiry"],
+                "stock": row["units"],
+                "batches": row["batches"],
+            })
         return {"items": items, "count": len(items)}
+
+    # ---------- Manual expiry scan trigger (immediate, on demand) --------
+    @router_notifications.post("/notifications/scan-expiry")
+    async def _scan_expiry_now(user: dict = Depends(require_role("pharmacy"))):
+        """Force-run the batch-based expiry scanners immediately so the
+        pharmacy sees any pending alerts without waiting for the 08:00 UTC
+        cron. Idempotent — reuses dedupe keys, so it won't duplicate."""
+        await _daily_expiry_scan()
+        await _weekly_expired_report()
+        return {"status": "ok"}
 
 
 # =====================================================================
@@ -762,50 +809,76 @@ THRESHOLD_DAYS = [90, 30, 7, 1]
 
 
 async def _daily_expiry_scan():
-    """Every day at 08:00 UTC: create expiry reminders for medicines whose expiry
-    falls in {90, 30, 7, 1} days from today. Deduped per (medicine, day-bucket)."""
+    """Every day at 08:00 UTC: create expiry reminders for MEDICINE BATCHES
+    whose expiry falls in {90, 30, 7, 1} days from today AND still have
+    `remaining_quantity > 0`. Depleted batches never trigger alerts even if
+    their expiry date has passed — this matches how pharmacies actually
+    work (once a batch is sold out, it's gone from the shelf).
+
+    Dedupe key includes medicine_id + threshold ONLY (not batch_id) so
+    that identical alerts across multiple batches with the same expiry
+    day-bucket collapse into one notification per medicine.
+    """
     try:
         today = datetime.now(timezone.utc).date()
         for days in THRESHOLD_DAYS:
             target = (today + timedelta(days=days)).strftime("%Y-%m-%d")
-            cursor = _db.medicines.find(
-                {"expiry_date": target, "stock": {"$gt": 0}},
-                {"_id": 0, "id": 1, "name": 1, "pharmacy_id": 1, "stock": 1, "expiry_date": 1},
-            )
+            # Group by (pharmacy, medicine) so users get one alert per
+            # medicine per threshold, even if they have multiple batches
+            # expiring on the same day.
+            pipeline = [
+                {"$match": {"expiry_date": target,
+                            "remaining_quantity": {"$gt": 0}}},
+                {"$group": {"_id": {"pharmacy_id": "$pharmacy_id",
+                                     "medicine_id":  "$medicine_id"},
+                             "units": {"$sum": "$remaining_quantity"},
+                             "expiry_date": {"$first": "$expiry_date"}}},
+            ]
             count = 0
-            async for m in cursor:
-                pid = m.get("pharmacy_id")
-                if not pid:
+            async for row in _db.medicine_batches.aggregate(pipeline):
+                pid = row["_id"].get("pharmacy_id")
+                mid = row["_id"].get("medicine_id")
+                if not pid or not mid:
                     continue
-                dedupe = f"expiry:{m['id']}:{days}"
+                med = await _db.medicines.find_one(
+                    {"id": mid, "pharmacy_id": pid},
+                    {"_id": 0, "id": 1, "name": 1},
+                )
+                if not med:
+                    continue
+                dedupe = f"expiry:{mid}:{days}:{target}"
                 await create_notification(
                     pid,
-                    f"تنبيه صلاحية: {m['name']}",
-                    f"سينتهي الدواء بعد {days} يوم/أيام (تاريخ {m['expiry_date']}). الكمية المتبقية: {m.get('stock', 0)}.",
+                    f"تنبيه صلاحية: {med['name']}",
+                    f"سينتهي دواء {med['name']} بعد {days} يوم/أيام (تاريخ {row['expiry_date']}). الكمية المتبقية في الدفعة: {row['units']}.",
                     type="expiry_reminder",
-                    data={"screen": "/inventory", "medicine_id": m["id"], "expiry_date": m["expiry_date"]},
+                    data={"screen": "/inventory", "medicine_id": mid,
+                          "expiry_date": row["expiry_date"],
+                          "batch_units": row["units"]},
                     dedupe_key=dedupe,
                     respect_prefs=True,
                 )
                 count += 1
-            logger.info("Expiry scan %s-day: created up to %d notifications", days, count)
+            logger.info("Expiry scan %s-day (batch-based): created up to %d notifications", days, count)
     except Exception:
         logger.exception("Daily expiry scan failed")
 
 
 async def _weekly_expired_report():
-    """Every Monday 09:00 UTC: per pharmacy, count all currently-expired medicines
-    with stock>0 and send a single summary notification (deep-link → expired list)."""
+    """Every Monday 09:00 UTC: aggregate ALREADY-EXPIRED medicine batches
+    whose `remaining_quantity > 0` and send one summary notification per
+    pharmacy. Depleted (sold-out) batches are ignored — matches user
+    requirement that "batch qty = 0 → no alerts even if past expiry"."""
     try:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        # Group expired items by pharmacy
         pipeline = [
-            {"$match": {"expiry_date": {"$lte": today, "$ne": None}, "stock": {"$gt": 0}}},
+            {"$match": {"expiry_date": {"$lte": today, "$ne": None},
+                         "remaining_quantity": {"$gt": 0}}},
             {"$group": {"_id": "$pharmacy_id",
-                        "count": {"$sum": 1},
-                        "total_units": {"$sum": "$stock"}}},
+                         "count": {"$sum": 1},
+                         "total_units": {"$sum": "$remaining_quantity"}}},
         ]
-        async for row in _db.medicines.aggregate(pipeline):
+        async for row in _db.medicine_batches.aggregate(pipeline):
             pid = row["_id"]
             if not pid:
                 continue
@@ -814,14 +887,14 @@ async def _weekly_expired_report():
             week_key = datetime.now(timezone.utc).strftime("%Y-W%V")
             await create_notification(
                 pid,
-                f"لديك {count} دواء منتهي الصلاحية",
-                f"تم رصد {count} دواء منتهي الصلاحية (إجمالي {units} وحدة). اضغط لعرض القائمة الكاملة.",
+                f"لديك {count} دفعة منتهية الصلاحية",
+                f"تم رصد {count} دفعة منتهية الصلاحية (إجمالي {units} وحدة). اضغط لعرض القائمة الكاملة.",
                 type="expired_weekly",
                 data={"screen": "/medicines/expired", "count": count, "total_units": units},
                 dedupe_key=f"expired_weekly:{pid}:{week_key}",
                 respect_prefs=True,
             )
-        logger.info("Weekly expired report completed")
+        logger.info("Weekly expired report (batch-based) completed")
     except Exception:
         logger.exception("Weekly expired report failed")
 

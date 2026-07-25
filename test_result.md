@@ -1533,3 +1533,117 @@ agent_communication:
         but returned 404). Same hashing/collection routing as login;
         Arabic error messages for wrong-current, short-new, same-as-current.
         Flag ties the whole "one code unlocks both" experience together.
+
+# =====================================================================
+# ITERATION: PHASE-A SCALABILITY — HOT-PATH INDEXES — 2026-07
+# =====================================================================
+backend:
+  - task: "Phase-A: MongoDB indexes on hot collections"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Expanded `ensure_indexes()` to cover the collections that would
+          bottleneck at 500 pharmacies / 100 suppliers. NO business
+          logic or interface change — only additive indexes.
+
+          New indexes added (76 total across 21 collections after startup):
+          * medicines: id, (pharmacy_id,name), (pharmacy_id,barcode), expiry_date
+          * medicine_batches: id, (pharmacy_id,medicine_id,purchased_at),
+            (pharmacy_id,medicine_id,remaining_quantity), expiry_date
+          * sales: id, (pharmacy_id,created_at desc),
+            (pharmacy_id,payment_type,created_at desc)
+          * orders: id, commit_id, (pharmacy_id,status,created_at desc),
+            (supplier_id,status,created_at desc),
+            (pharmacy_id,created_at desc)
+          * returns: id, original_order_id,
+            (pharmacy_id,status,created_at desc),
+            (supplier_id,status,created_at desc)
+          * return_credits: reference_id, (pharmacy_id,supplier_id)
+          * customers: id, (pharmacy_id,name), (pharmacy_id,phone)
+          * customer_payments: (customer_id,created_at desc),
+            (pharmacy_id,created_at desc)
+          * supplier_ledger: (pharmacy_id,supplier_id,ts desc), reference_id
+          * supplier_accounts: (pharmacy_id,supplier_id)
+          * notifications: (user_id,created_at desc), (user_id,read), batch_id
+          * user_devices: user_id
+          * notification_batches: created_at
+          * import_jobs: (supplier_id,created_at desc)
+          * import_items: job_id
+          * pharmacies/suppliers/admins: added id secondary + kept phone/region
+          * supplier_products: (supplier_id,name) compound
+          * supplier_sales: (pharmacy_id,status)
+
+          Verified: startup log `DB indexes ensured (Phase-A: full
+          coverage on hot collections)`. Enumeration of db.pharmacy_db
+          collections shows all 76 indexes present.
+
+test_plan:
+  current_focus:
+    - "Phase-A: MongoDB indexes on hot collections"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+# =====================================================================
+# ITERATION: BATCH-BASED EXPIRY MANAGEMENT — 2026-07
+# =====================================================================
+backend:
+  - task: "Batch-based expiry scanning + in-app notifications"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/notifications.py, /app/backend/batches.py, /app/backend/accounting.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Migrated expiry logic from `medicines.expiry_date` (single field)
+          to `medicine_batches` (per-batch expiry) so each purchase is an
+          independent lot and depleted lots stop triggering alerts.
+
+          Changes:
+          1. `batches.py`: added `get_earliest_active_expiry()` and
+             `refresh_medicine_expiry()` helpers.
+          2. `accounting.py::/medicines/buy-v2`: after each purchase, the
+             medicine's mirror expiry_date is recomputed from ACTIVE
+             batches only (remaining_quantity > 0). New batch is always
+             appended; old batches never overwritten.
+          3. `accounting.py::/sales`: after FIFO consumption, mirror
+             expiry_date is recomputed → if the batch we just fully
+             depleted was the earliest-expiring, its expiry disappears
+             from all future alerts automatically.
+          4. `notifications.py::_daily_expiry_scan`: now aggregates
+             `medicine_batches` where `remaining_quantity > 0` and
+             `expiry_date` matches thresholds {90,30,7,1}. Groups by
+             (pharmacy, medicine) so multi-batch same-day expiries
+             collapse to one alert. Dedupe key includes date target.
+          5. `notifications.py::_weekly_expired_report`: aggregates
+             expired batches with `remaining_quantity > 0` only.
+          6. `notifications.py::/medicines/expired-list`: batch-based
+             aggregation returning earliest_expiry per medicine +
+             per-batch breakdown.
+          7. `notifications.py::/notifications/scan-expiry` (new POST):
+             on-demand trigger so the pharmacy sees alerts immediately.
+          8. `server.py::start_notification_scheduler`: runs an initial
+             batch-based scan on backend startup so alerts appear right
+             away without waiting for the 08:00 UTC cron.
+
+          Live smoke test: created two meds with 7-day-expiry batches
+          → hit /notifications/scan-expiry → both alerts appeared in
+          the user's notifications feed with correct Arabic text.
+
+test_plan:
+  current_focus:
+    - "Batch-based expiry scanning + in-app notifications"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"

@@ -1,0 +1,37 @@
+{
+  "summary": "E2E backend verification of batch-based expiry management. Wrote /app/backend/tests/test_batch_expiry.py covering scenarios A-G plus role/auth sanity on POST /api/notifications/scan-expiry (10 tests). ALL 10 new tests pass, and ALL required regression suites pass without modification: test_fifo_inventory (10/10), test_returns_flow (25/25), test_returns_exploratory (18/18), test_accounting_unlock (9/9). Total 72/72 passed. The most business-critical requirement (scenario C: depleted batch disappears from alerts even when past expiry) is verified in two dimensions: (a) depleted 7-day batch does NOT generate an expiry_reminder even after force scan, and (b) depleted already-expired batch does NOT show up in GET /medicines/expired-list. Also verified: FIFO drains oldest batch first, mirror medicine.expiry_date refreshes to the earliest ACTIVE batch expiry after every purchase and every sale, Arabic notification title 'تنبيه صلاحية:' contains the medicine name with data.medicine_id set, per-day dedupe blocks duplicate scans, weekly expired_weekly notification carries data.count>=1 and re-scans within the same week_key do NOT create duplicates, and expired-list returns per-batch details {batch_id, expiry_date, remaining_quantity}. Sanity: supplier→403 and unauth→401 on /api/notifications/scan-expiry.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_batch_expiry.py",
+    "/app/test_reports/pytest/pytest_batch_expiry.xml",
+    "/app/test_reports/pytest/pytest_batch_expiry_all.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "notifications.py: default EMERGENT_PUSH_KEY='placeholder' will emit a 401 warning in production logs until the real key is set; behaviour is non-blocking (as coded), which is fine for now but should be tracked.",
+    "notifications.py::_daily_expiry_scan: dedupe key is 'expiry:{mid}:{days}:{target}' — since target is derived from today+days, this key is effectively day-bucketed. Good. Just document that a re-scan on a DIFFERENT calendar day WILL create a new reminder for the same batch as it slides through the next threshold (which is the intended behaviour).",
+    "notifications.py::_weekly_expired_report: dedupe key uses ISO week (%Y-W%V). Verified idempotent within the same week even after batch depletion.",
+    "batches.py::refresh_medicine_expiry: correctly writes None onto medicines.expiry_date when no active batch exists — this preserves the UI/list from stale expiry data after full depletion."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_batch_expiry.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (72/72: 10 new + 62 regression)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "Each test class creates its own TEST_EXP_MED_<letter>_<timestamp> medicines via /medicines/buy-v2 to avoid collisions across iterations. Data is left in place (test names are namespaced by unix timestamp) so subsequent runs are always additive.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Base URL: EXPO_PUBLIC_BACKEND_URL from /app/frontend/.env. Pharmacy: 07700000001/pass123. Supplier: 07811111111/sup1. Login endpoint is POST /api/auth/login (returns {token, ...}). /api/notifications endpoint caps limit at 200 — paginate with skip if you need more. New endpoint POST /api/notifications/scan-expiry is pharmacy-only and idempotent (uses server-side dedupe keys). expired-list schema returns items[]={id,name,barcode,price,expiry_date,stock,batches:[{batch_id,expiry_date,remaining_quantity}]}.",
+  "rca_of_issue": "N/A — no bugs found. Test data note: expiry inputs are ISO 'YYYY-MM-DD'. Backend uses server-side 'today' (UTC) for threshold matching; when running the test locally very close to UTC midnight there is a small window where +7d may resolve to a different day than the batch's stored expiry_date. Not observed during this run."
+}

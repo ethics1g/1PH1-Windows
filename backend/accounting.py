@@ -349,6 +349,9 @@ def install_routes(require_role):
             await _db.medicines.update_one(
                 {"id": med["id"]}, {"$set": {"quantity": new_total, "stock": new_total}},
             )
+            # Refresh next-to-expire mirror in case the batch we just fully
+            # consumed WAS the earliest-expiring one → alerts auto-shift.
+            await _batches.refresh_medicine_expiry(user["sub"], med["id"])
 
         totals = _sale_totals(sold_items)
 
@@ -455,6 +458,10 @@ def install_routes(require_role):
         await _db.medicines.update_one(
             {"id": med_id}, {"$set": {"quantity": new_total, "stock": new_total}},
         )
+        # Refresh the medicine's "next-to-expire" mirror from ACTIVE batches
+        # (any batch whose remaining_quantity > 0). Depleted batches are
+        # ignored so their expiry no longer skews the UI or alerts.
+        await _batches.refresh_medicine_expiry(user["sub"], med_id)
         med = await _db.medicines.find_one({"id": med_id}, {"_id": 0})
         return {"medicine": med, "batch": batch, "total_stock": new_total}
 

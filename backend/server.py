@@ -1488,6 +1488,15 @@ async def start_notification_scheduler():
         notif_mod.start_scheduler()
         await notif_mod.restore_scheduled()
         logger.info("Notification scheduler ready")
+        # Fire a one-shot batch-based expiry scan so pending alerts show up
+        # immediately (the daily cron only runs at 08:00 UTC).
+        # Idempotent via dedupe keys.
+        try:
+            await notif_mod._daily_expiry_scan()
+            await notif_mod._weekly_expired_report()
+            logger.info("Initial batch-based expiry scan completed")
+        except Exception:
+            logger.exception("Initial expiry scan failed (non-fatal)")
     except Exception:
         logger.exception("Failed to start notification scheduler")
 
@@ -1519,20 +1528,121 @@ async def seed_admin():
 
 @app.on_event("startup")
 async def ensure_indexes():
-    """Create indexes used by the marketplace and frequently-queried fields. Idempotent."""
+    """Create indexes used by the marketplace and frequently-queried fields. Idempotent.
+
+    Phase-A scalability improvements: add compound / secondary indexes on
+    the hot collections so that queries stay fast at 500+ pharmacies
+    and 100+ suppliers. All indexes are safe/non-unique and additive —
+    they change NO business logic or interface, only query performance.
+    `create_index` is idempotent so this can be re-run on every startup.
+    """
+    from pymongo import ASCENDING, DESCENDING
     try:
+        # ---- Users (auth lookups) ----
         await db.pharmacies.create_index("phone", unique=False)
         await db.pharmacies.create_index("region_normalized")
+        await db.pharmacies.create_index("id")
         await db.suppliers.create_index("phone", unique=False)
         await db.suppliers.create_index("region_normalized")
+        await db.suppliers.create_index("id")
+        await db.admins.create_index("phone", unique=False)
+
+        # ---- Marketplace / supplier catalog ----
         await db.supplier_products.create_index("supplier_id")
         await db.supplier_products.create_index("region_normalized")
+        await db.supplier_products.create_index([("supplier_id", ASCENDING),
+                                                  ("name", ASCENDING)])
         await db.supplier_sales.create_index("commit_id")
         await db.supplier_sales.create_index("supplier_id")
         await db.supplier_sales.create_index("status")
+        await db.supplier_sales.create_index([("pharmacy_id", ASCENDING),
+                                               ("status", ASCENDING)])
+
+        # ---- Audit ----
         await db.audit_logs.create_index("action")
         await db.audit_logs.create_index("timestamp")
-        logger.info("DB indexes ensured")
+
+        # ---- Pharmacy inventory (medicines + FIFO batches) ----
+        await db.medicines.create_index("id")
+        await db.medicines.create_index([("pharmacy_id", ASCENDING),
+                                          ("name", ASCENDING)])
+        await db.medicines.create_index([("pharmacy_id", ASCENDING),
+                                          ("barcode", ASCENDING)])
+        await db.medicines.create_index("expiry_date")
+        await db.medicine_batches.create_index("id")
+        await db.medicine_batches.create_index([("pharmacy_id", ASCENDING),
+                                                 ("medicine_id", ASCENDING),
+                                                 ("purchased_at", ASCENDING)])
+        await db.medicine_batches.create_index([("pharmacy_id", ASCENDING),
+                                                 ("medicine_id", ASCENDING),
+                                                 ("remaining_quantity", ASCENDING)])
+        await db.medicine_batches.create_index("expiry_date")
+
+        # ---- Sales / POS ----
+        await db.sales.create_index("id")
+        await db.sales.create_index([("pharmacy_id", ASCENDING),
+                                      ("created_at", DESCENDING)])
+        await db.sales.create_index([("pharmacy_id", ASCENDING),
+                                      ("payment_type", ASCENDING),
+                                      ("created_at", DESCENDING)])
+
+        # ---- Orders (pharmacy → supplier lifecycle) ----
+        await db.orders.create_index("id")
+        await db.orders.create_index("commit_id")
+        await db.orders.create_index([("pharmacy_id", ASCENDING),
+                                       ("status", ASCENDING),
+                                       ("created_at", DESCENDING)])
+        await db.orders.create_index([("supplier_id", ASCENDING),
+                                       ("status", ASCENDING),
+                                       ("created_at", DESCENDING)])
+        await db.orders.create_index([("pharmacy_id", ASCENDING),
+                                       ("created_at", DESCENDING)])
+
+        # ---- Returns ----
+        await db.returns.create_index("id")
+        await db.returns.create_index("original_order_id")
+        await db.returns.create_index([("pharmacy_id", ASCENDING),
+                                        ("status", ASCENDING),
+                                        ("created_at", DESCENDING)])
+        await db.returns.create_index([("supplier_id", ASCENDING),
+                                        ("status", ASCENDING),
+                                        ("created_at", DESCENDING)])
+        await db.return_credits.create_index("reference_id")
+        await db.return_credits.create_index([("pharmacy_id", ASCENDING),
+                                                ("supplier_id", ASCENDING)])
+
+        # ---- Accounting: customers, debts, ledgers ----
+        await db.customers.create_index("id")
+        await db.customers.create_index([("pharmacy_id", ASCENDING),
+                                           ("name", ASCENDING)])
+        await db.customers.create_index([("pharmacy_id", ASCENDING),
+                                           ("phone", ASCENDING)])
+        await db.customer_payments.create_index([("customer_id", ASCENDING),
+                                                   ("created_at", DESCENDING)])
+        await db.customer_payments.create_index([("pharmacy_id", ASCENDING),
+                                                   ("created_at", DESCENDING)])
+        await db.supplier_accounts.create_index([("pharmacy_id", ASCENDING),
+                                                   ("supplier_id", ASCENDING)])
+        await db.supplier_ledger.create_index([("pharmacy_id", ASCENDING),
+                                                 ("supplier_id", ASCENDING),
+                                                 ("ts", DESCENDING)])
+        await db.supplier_ledger.create_index("reference_id")
+
+        # ---- Notifications ----
+        await db.notifications.create_index([("user_id", ASCENDING),
+                                                ("created_at", DESCENDING)])
+        await db.notifications.create_index([("user_id", ASCENDING),
+                                                ("read", ASCENDING)])
+        await db.notifications.create_index("batch_id")
+        await db.notification_batches.create_index("created_at")
+        await db.user_devices.create_index("user_id")
+
+        # ---- Catalog import ----
+        await db.import_jobs.create_index([("supplier_id", ASCENDING),
+                                             ("created_at", DESCENDING)])
+        await db.import_items.create_index("job_id")
+
+        logger.info("DB indexes ensured (Phase-A: full coverage on hot collections)")
     except Exception:
         logger.exception("ensure_indexes failed (non-fatal)")
 

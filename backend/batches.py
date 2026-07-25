@@ -152,6 +152,34 @@ async def get_total_stock(pharmacy_id: str, medicine_id: str) -> int:
     return 0
 
 
+async def get_earliest_active_expiry(pharmacy_id: str, medicine_id: str) -> Optional[str]:
+    """Return the earliest expiry date among the medicine's batches that
+    still have `remaining_quantity > 0` and a non-null expiry_date.
+    Depleted batches (remaining=0) are IGNORED — this reflects the actual
+    stock currently on the shelf. Returns None if no such batch exists.
+    """
+    doc = await _db.medicine_batches.find_one(
+        {"pharmacy_id": pharmacy_id, "medicine_id": medicine_id,
+         "remaining_quantity": {"$gt": 0},
+         "expiry_date": {"$ne": None}},
+        {"_id": 0, "expiry_date": 1},
+        sort=[("expiry_date", 1)],
+    )
+    return (doc or {}).get("expiry_date")
+
+
+async def refresh_medicine_expiry(pharmacy_id: str, medicine_id: str) -> Optional[str]:
+    """Recompute the mirror `medicines.expiry_date` field from active batches
+    and persist it. The field is used ONLY as a quick lookup for the UI;
+    the source of truth for expiry alerts is `medicine_batches`."""
+    active = await get_earliest_active_expiry(pharmacy_id, medicine_id)
+    await _db.medicines.update_one(
+        {"id": medicine_id, "pharmacy_id": pharmacy_id},
+        {"$set": {"expiry_date": active}},
+    )
+    return active
+
+
 def install_routes(require_role):
     router_batches.routes.clear()
 
