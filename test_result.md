@@ -1769,3 +1769,17 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        External HID barcode scanner: 65/65 backend regression + 9 E2E
+        UI scenarios all green. Feature works on sell/buy/inventory,
+        respects the enabled flag during camera modal, rejects slow
+        typing, and doesn't regress existing screens.
+    - agent: "main"
+      message: |
+        Added `ExternalScannerProvider` + `useExternalScanner(cb)` hook.
+        Zero backend changes. Wired into sell/buy/inventory. Provider
+        auto-selects the right capture strategy per platform (window
+        keydown on web, hidden autofocused TextInput on native).
