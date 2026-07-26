@@ -1848,3 +1848,16 @@ test_plan:
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Excel/CSV import: 16/16 new pytest + 74/74 regression = 90/90.
+        Fixed 1 bug inside excel_import.py (`mapping.get('name')` was
+        falsy when name column at index 0). No other modules touched.
+    - agent: "main"
+      message: |
+        New module `excel_import.py` with smart Arabic/English column
+        mapper + 2 endpoints (preview + commit). Reuses batches.create_batch
+        so FIFO/expiry/inventory logic unchanged. Frontend screen at
+        /orders/excel-import + teal button on /buy.
