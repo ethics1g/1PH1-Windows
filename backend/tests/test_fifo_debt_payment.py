@@ -233,152 +233,18 @@ class TestCustomerFIFOPayment:
 # ============================ SUPPLIERS ==============================
 # =====================================================================
 
+# NOTE (iteration 22): Supplier FIFO debt payment endpoints were REMOVED
+# per the user's explicit request ("لا تقم بأي تعديل على نظام ديون المذاخر").
+# The tests below are kept as SKIPPED historical stubs to document the
+# removed behavior — do NOT re-enable without user confirmation.
+
+
+@pytest.mark.skip(reason="Supplier FIFO payment endpoints removed by user request (iter 22)")
 class TestSupplierFIFOPayment:
 
-    def test_01_get_supplier_accounts_overview(self, h, supplier_state):
-        """Find a supplier with outstanding balance to test against."""
-        r = requests.get(f"{API}/accounting/supplier-accounts", headers=h, timeout=15)
-        assert r.status_code == 200, r.text
-        j = r.json()
-        assert "items" in j
-        # Pick first supplier with outstanding > 0, else first one
-        candidates = [s for s in j["items"] if s.get("outstanding_balance", 0) > 0]
-        if not candidates:
-            candidates = j["items"]
-        if not candidates:
-            pytest.skip("No supplier accounts found — cannot test supplier FIFO pay")
-        chosen = candidates[0]
-        supplier_state["sid"] = chosen["supplier_id"]
-        supplier_state["initial_outstanding"] = chosen["outstanding_balance"]
-        supplier_state["supplier_name"] = chosen.get("supplier_name")
-
-    def test_02_unpaid_invoices_endpoint_fifo_sorted(self, h, supplier_state):
-        sid = supplier_state["sid"]
-        r = requests.get(f"{API}/accounting/supplier-accounts/{sid}/unpaid-invoices",
-                         headers=h, timeout=15)
-        assert r.status_code == 200, r.text
-        j = r.json()
-        assert "invoices" in j
-        assert "count" in j
-        assert "total_outstanding" in j
-        invoices = j["invoices"]
-        # FIFO: created_at must be ASC
-        dates = [inv["created_at"] for inv in invoices if inv.get("created_at")]
-        assert dates == sorted(dates), f"Not FIFO sorted: {dates}"
-        # Each invoice has required fields
-        for inv in invoices:
-            assert "type" in inv and inv["type"] in ("marketplace", "paper")
-            assert "id" in inv
-            assert "outstanding" in inv and inv["outstanding"] > 0
-            assert "invoice_number" in inv
-            assert "total" in inv
-            assert "paid_amount" in inv
-        supplier_state["unpaid_invoices"] = invoices
-        supplier_state["total_available"] = j["total_outstanding"]
-
-    def test_03_supplier_account_detail_enriched(self, h, supplier_state):
-        sid = supplier_state["sid"]
-        r = requests.get(f"{API}/accounting/supplier-accounts/{sid}",
-                         headers=h, timeout=15)
-        assert r.status_code == 200, r.text
-        j = r.json()
-        assert "account" in j
-        assert "orders" in j
-        assert "paper_orders" in j  # NEW
-        assert "returns" in j
-        assert "ledger" in j
-        # Orders enriched with paid_amount, outstanding, payment_status
-        for o in j["orders"]:
-            assert "paid_amount" in o
-            assert "outstanding" in o
-            assert "payment_status" in o
-            assert o["payment_status"] in ("paid", "partial", "unpaid")
-        # Account fields
-        acct = j["account"]
-        assert "outstanding_balance" in acct
-        assert "invoices_paid_total" in acct  # NEW
-        assert "paper_purchased" in acct
-        assert "marketplace_purchased" in acct
-
-    def test_04_supplier_partial_payment_fifo(self, h, supplier_state):
-        """Pay a small amount → should target oldest invoice first."""
-        invoices = supplier_state.get("unpaid_invoices", [])
-        if not invoices:
-            pytest.skip("No unpaid invoices for supplier")
-        sid = supplier_state["sid"]
-        oldest = invoices[0]
-        # Pay half of the oldest invoice's outstanding (or 1 if too small)
-        pay_amount = max(1.0, round(oldest["outstanding"] / 2, 2))
-        # Ensure we don't exceed total available
-        pay_amount = min(pay_amount, supplier_state["total_available"])
-        r = requests.post(f"{API}/accounting/supplier-accounts/{sid}/pay",
-                          json={"amount": pay_amount, "notes": "TEST_supplier_partial"},
-                          headers=h, timeout=15)
-        assert r.status_code == 200, f"{r.status_code} {r.text}"
-        j = r.json()
-        assert j["status"] == "ok"
-        assert j["amount_applied"] == pay_amount
-        allocs = j["allocations"]
-        assert len(allocs) >= 1
-        # First allocation targets the oldest invoice
-        assert allocs[0]["invoice_id"] == oldest["id"]
-        assert allocs[0]["amount_applied"] == pay_amount
-        assert allocs[0]["previous_outstanding"] == oldest["outstanding"]
-        assert allocs[0]["new_outstanding"] == round(oldest["outstanding"] - pay_amount, 2)
-        # Ledger entry structure
-        pay = j["payment"]
-        assert pay["kind"] == "pharmacy_payment"
-        assert "allocations" in pay
-        assert "recorded_by" in pay
-        assert pay["invoices_fully_paid"] + pay["invoices_partial"] == len(allocs)
-        supplier_state["remaining_after_partial"] = j["remaining_balance"]
-
-    def test_05_supplier_ledger_has_pharmacy_payment_entry(self, h, supplier_state):
-        sid = supplier_state["sid"]
-        r = requests.get(f"{API}/accounting/supplier-accounts/{sid}",
-                         headers=h, timeout=15)
-        assert r.status_code == 200
-        ledger = r.json()["ledger"]
-        pay_entries = [l for l in ledger if l.get("kind") == "pharmacy_payment"]
-        assert len(pay_entries) >= 1, f"No pharmacy_payment entry in ledger: {ledger[:3]}"
-        latest = pay_entries[0]  # sorted desc
-        assert "allocations" in latest
-        assert latest["recorded_by"] is not None
-        assert "amount" in latest
-
-    def test_06_supplier_outstanding_decreased(self, h, supplier_state):
-        sid = supplier_state["sid"]
-        r = requests.get(f"{API}/accounting/supplier-accounts/{sid}",
-                         headers=h, timeout=15)
-        acct = r.json()["account"]
-        new_out = acct["outstanding_balance"]
-        assert new_out < supplier_state["initial_outstanding"], \
-            f"outstanding did not decrease: {new_out} vs {supplier_state['initial_outstanding']}"
-        assert acct["invoices_paid_total"] > 0
-
-    def test_07_supplier_overpayment_rejected(self, h, supplier_state):
-        sid = supplier_state["sid"]
-        r = requests.post(f"{API}/accounting/supplier-accounts/{sid}/pay",
-                          json={"amount": 99999999.0}, headers=h, timeout=15)
-        assert r.status_code == 400, r.text
-
-    def test_08_supplier_zero_amount_rejected(self, h, supplier_state):
-        sid = supplier_state["sid"]
-        r = requests.post(f"{API}/accounting/supplier-accounts/{sid}/pay",
-                          json={"amount": 0}, headers=h, timeout=15)
-        assert r.status_code == 422  # Pydantic gt=0
-
-    def test_09_supplier_orders_reflect_payment(self, h, supplier_state):
-        """Verify at least one order's paid_amount increased and payment_status updated."""
-        sid = supplier_state["sid"]
-        r = requests.get(f"{API}/accounting/supplier-accounts/{sid}",
-                         headers=h, timeout=15)
-        orders = r.json()["orders"]
-        # At least one order should be paid or partial now
-        paid_orders = [o for o in orders if o.get("payment_status") in ("paid", "partial")]
-        assert len(paid_orders) >= 1 or any(
-            o.get("paid_amount", 0) > 0 for o in orders
-        ), "No orders show payment"
+    def test_supplier_endpoints_removed(self, h):
+        """Placeholder — original tests removed with endpoints."""
+        pass
 
 
 # =====================================================================
