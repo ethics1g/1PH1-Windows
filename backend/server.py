@@ -1462,6 +1462,13 @@ paper_orders_mod.install_routes(require_role)
 app.include_router(paper_orders_mod.router_paper_orders)
 
 
+# ============== Excel / CSV Catalog Import ==============
+import excel_import as excel_import_mod  # noqa: E402
+excel_import_mod.init(db)
+excel_import_mod.install_routes(require_role)
+app.include_router(excel_import_mod.router_excel)
+
+
 @app.on_event("startup")
 async def _run_batches_migration():
     try:

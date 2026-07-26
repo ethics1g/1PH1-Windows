@@ -1783,3 +1783,68 @@ agent_communication:
         Zero backend changes. Wired into sell/buy/inventory. Provider
         auto-selects the right capture strategy per platform (window
         keydown on web, hidden autofocused TextInput on native).
+
+# =====================================================================
+# ITERATION: EXCEL / CSV CATALOG IMPORT — 2026-07
+# =====================================================================
+backend:
+  - task: "Excel/CSV supplier catalog import + smart column mapper"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/excel_import.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          New module `excel_import.py` with:
+          * POST /api/orders/excel/preview — reads XLSX / XLS / CSV
+            (openpyxl / xlrd / csv), auto-detects columns via a wide
+            alias list covering Arabic + English variants for name,
+            barcode, quantity, price, expiry, batch, manufacturer,
+            strength, dosage_form. Returns parsed items + detected
+            column mapping + raw headers for debugging.
+          * POST /api/orders/excel/commit — persists reviewed items via
+            the SAME `_batches.create_batch` used by /medicines/buy-v2:
+              - existing medicine (barcode → name) is reused, not
+                overwritten
+              - each row appends a NEW batch (FIFO preserved)
+              - stock mirror + earliest-active expiry auto-refreshed
+              - error per row captured; overall report returns imported,
+                new, updated, failed counts + reasons.
+
+          Safeguards: hard cap 30k rows, 30MB file, CSV sniffed for
+          delimiter, robust date parser (YYYY-MM, DD/MM/YYYY, MM/YYYY).
+
+          Live smoke test: 2-row CSV with mixed Arabic/English headers
+          → correct mapping → both rows imported, 2 new medicines +
+          2 batches, expiry parsed.
+
+frontend:
+  - task: "Excel import screen + Buy screen entry"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/orders/excel-import.tsx, /app/frontend/app/buy.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          New teal button on /buy → routes to /orders/excel-import.
+          Screen uses expo-document-picker to accept XLSX/XLS/CSV,
+          uploads base64, shows detected columns, paginates the review
+          list (100 per page) to stay responsive at 20k+ rows, and
+          renders a final result summary with success/new/updated/failed
+          counts.
+
+test_plan:
+  current_focus:
+    - "Excel/CSV supplier catalog import + smart column mapper"
+    - "Excel import screen + Buy screen entry"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"

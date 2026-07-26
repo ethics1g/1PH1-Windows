@@ -125,6 +125,20 @@ export default function Buy() {
           </TouchableOpacity>
 
           <TouchableOpacity
+            testID="btn-import-excel"
+            style={styles.excelBtn}
+            onPress={() => router.push('/orders/excel-import' as any)}
+            disabled={busy}
+          >
+            <Ionicons name="document-text" size={22} color="#fff" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.invoiceScanTitle}>استيراد ملف Excel</Text>
+              <Text style={styles.invoiceScanSub}>XLSX / XLS / CSV — يدعم عناوين عربية وإنجليزية</Text>
+            </View>
+            <Ionicons name="chevron-back" size={22} color="#fff" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
             testID="btn-buy-scan"
             style={styles.scanBtn}
             onPress={() => setScannerOpen(true)}
@@ -200,6 +214,7 @@ const styles = StyleSheet.create({
   scanBtn: { backgroundColor: colors.secondaryDark, borderRadius: 16, paddingVertical: 16, flexDirection: 'row-reverse', gap: 8, alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
   scanBtnTxt: { color: '#fff', fontSize: 16, fontWeight: '800' },
   invoiceScanBtn: { backgroundColor: '#7c3aed', borderRadius: 16, paddingVertical: 14, paddingHorizontal: 14, flexDirection: 'row-reverse', gap: 10, alignItems: 'center', marginBottom: 12 },
+  excelBtn: { backgroundColor: '#0d9488', borderRadius: 16, paddingVertical: 14, paddingHorizontal: 14, flexDirection: 'row-reverse', gap: 10, alignItems: 'center', marginBottom: 12 },
   invoiceScanTitle: { color: '#fff', fontSize: 15, fontWeight: '800', textAlign: 'right' },
   invoiceScanSub: { color: '#ede9fe', fontSize: 11, fontWeight: '600', textAlign: 'right', marginTop: 2 },
   field: { marginBottom: 14 },

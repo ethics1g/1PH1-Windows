@@ -1,0 +1,41 @@
+{
+  "summary": "Verified the new Excel/CSV supplier-catalog import feature (POST /api/orders/excel/preview and /api/orders/excel/commit). Wrote /app/backend/tests/test_excel_import.py with 16 tests covering ALL 11 requested scenarios A–K (smart column mapping, commit pipeline, update path adds new batch preserving FIFO, unknown-headers-400, XLSX support, alternative Arabic headers, multiple date formats, per-row error reporting, 500-row large file, auth guards 401/403, empty/bad-base64 400). Ran 16/16 GREEN after a single one-line fix inside excel_import.py (see below). Regression matrix (Case L): test_fifo_inventory 10/10, test_returns_flow 25/25, test_batch_expiry 10/10, test_paper_orders 20/20, test_accounting_unlock 9/9 = 74/74 GREEN. Overall: 90/90 backend tests pass. Fix applied in excel_import.py ONLY, per user's explicit constraint — no changes to OCR/purchase/sales/inventory/FIFO/batches/permissions.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_excel_import.py",
+    "/app/test_reports/pytest/pytest_excel_import.xml",
+    "/app/test_reports/pytest/pytest_iteration19_regression.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "excel_import.py L318 (BUG FOUND & FIXED): `if not mapping.get('name'):` returned True when the name column was at index 0 (falsy int). Any CSV whose first column was the medicine name (e.g. Case G headers `name,quantity,price,expiry`) triggered a spurious 400. Replaced with `if 'name' not in mapping:`. Verified by re-running all 16 cases (Case G now green).",
+    "excel_import.py _map_columns — short 3-char aliases like `اسم`, `عدد`, `شكل`, `نوع` can cause false-positive substring matches on unrelated Arabic headers (e.g. a header containing `اسم` anywhere would be picked as `name` if no exact match found earlier). Not triggered in this test matrix but worth tightening to length>=4 for substring fallback. Non-blocking.",
+    "excel_import.py _commit — supplier_id/supplier_name are accepted in the payload but never persisted on the medicine or batch records. Not a bug per current requirements (batches inherit from the medicine), but if the pharmacy later wants to trace 'this batch came from supplier X', that link is currently lost. Consider stamping supplier_id on medicine_batches doc.",
+    "excel_import.py _commit — successful batch creation calls `_batches.create_batch` and then `update_one({id: batch['id']}, {$set: {batch_number: ...}})`. This works because create_batch inserts synchronously. Good.",
+    "excel_import.py — 30MB decoded-size cap + 30000-row XLSX cap are reasonable safety limits. CSV path has no explicit row cap; a malicious 500k-row CSV would parse fully. Consider a matching 30k CSV cap for symmetry.",
+    "excel_import.py _preview — returns raw `columns_detected` dict which is exactly what the frontend review screen needs. Good separation of parse vs commit.",
+    "No deprecated Expo/RN packages introduced by this feature (backend-only + a new tsx screen that uses expo-document-picker which is current). No SafeAreaView issues."
+  ],
+  "updated_files": [
+    "/app/backend/excel_import.py (fixed 1-line bug: `not mapping.get('name')` → `'name' not in mapping`)",
+    "/app/backend/tests/test_excel_import.py (new file, 16 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 excel_import + 74/74 regression = 90/90)",
+    "frontend": "N/A — backend-only testing as requested"
+  },
+  "seed_data_creation": "Created ~510 TEST_-prefixed medicines in the pharmacy sandbox for user 07700000001: 2 from Case B (TEST_XLS_MED_A/B), 3 from Case E (TEST_XLS_E1/2/3), 1 from Case F, 3 from Case G, 1 from Case H, 500 from Case I. All prefixed with TEST_XLS_ so easily identifiable. Case C also created a second batch on each of the Case-B medicines (110 total stock instead of 50). None interfere with regression tests (all TEST_-prefixed).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The excel import endpoints are /api/orders/excel/preview and /api/orders/excel/commit and require the `pharmacy` role. Commit uses `_batches.create_batch` for every row, so any bug in that pipeline would show up here first — keep this suite in the regression rotation. When testing frontend /orders/excel-import.tsx, mock the file picker via `page.set_input_files` on a hidden <input type=file>; the screen POSTs the base64 payload directly to /preview so backend-level assertions here already cover the important semantics.",
+  "rca_of_issue": "Bug: `if not mapping.get('name')` in /app/backend/excel_import.py line 318 used truthy check on an integer column-index. When the medicine-name column was at position 0 (which is the most common case — most catalogs have `name` as the very first column), Python treats the index `0` as falsy and the endpoint returned HTTP 400 with detail 'لم نتمكن من تحديد عمود اسم الدواء' even though detection actually succeeded. Reproduction: POST /api/orders/excel/preview with `name,qty,price\\nA,1,1\\n` → returns 400 (should be 200). Mitigation applied: replace the truthy check with membership check `'name' not in mapping`. All 16 tests pass post-fix. No regression on existing 74 tests."
+}
