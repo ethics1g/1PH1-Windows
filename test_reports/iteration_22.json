@@ -1,0 +1,36 @@
+{
+  "summary": "Verified iteration_22 REVERT + partial keep: (1) Customer FIFO payment kept and GET /api/customers/{cid} now returns payments sorted ASC (oldest→newest) — confirmed with two timed test payments TEST_pay1 then TEST_pay2 appearing in that order; allocations[] still present. (2) Supplier debts FULLY REVERTED — GET /api/accounting/supplier-accounts/{sid} no longer contains paper_orders/invoices_paid_total/paper_purchased/marketplace_purchased; orders array items have only original fields (id, total, total_cost, created_at, completed_at, items, commit_id) with NO paid_amount/outstanding/payment_status/order_number enrichments; POST /pay → 405, GET /unpaid-invoices → 405; outstanding_balance = total_purchased − credit_applied_total formula verified. (3) Frontend /pharmacy-orders new tab 'الطلبيات المصورة' (testID flt-paper) is present in the filter list, tappable, and renders the empty-state 'التقاط صورة طلبية' CTA (testID btn-scan-cta) when pharmacy has no paper orders — paper order card branch (paper-{id} → /orders/paper/{id}) code path reviewed & correct. Regression: paper_orders 20/20 + returns_flow 25/25 tests still pass. Overall backend: 17/17 new iteration_22 tests + 45/45 regression = 62/62 PASSED.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_revert_and_paper_orders_tab.py",
+    "/app/test_reports/pytest/pytest_revert_iter22.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "accounting.py L145-156 _pharmacy_supplier_debit correctly reverted to return float (sum of completed order totals). No paper_orders integration.",
+    "accounting.py L159-183 _read_supplier_account returns only: pharmacy_id, supplier_id, total_purchased, credit_applied_total, outstanding_balance, available_credit, applied_return_ids, updated_at — matches pre-iteration_21 shape.",
+    "accounting.py L705-734 GET /accounting/supplier-accounts/{supplier_id} projection restricted to {id, total, total_cost, created_at, completed_at, items, commit_id} — no per-order enrichment. Returns only {account, ledger, orders, returns}, no paper_orders key.",
+    "accounting.py L556-573 GET /api/customers/{cid} — payments now sorted with .sort('created_at', 1) ASC (verified in test_02). FIFO allocation loop L575-670 unchanged and still returns allocations[]/invoices_fully_paid/invoices_partial/recorded_by.",
+    "pharmacy-orders.tsx L34-35 FILTERS array correctly appends {key:'paper', label:'الطلبيات المصورة'} at the end. State (papers), load branch (filter==='paper' → /orders/paper), card renderer with testID paper-{id}, and empty-state CTA (testID btn-scan-cta → /orders/scan) all wired correctly.",
+    "pharmacy-orders.tsx L156 uses router.push(`/orders/paper/${o.id}`) matching existing detail page route.",
+    "No supplier debt POST /pay or GET /unpaid-invoices routes exist in accounting.py — confirmed by 405 responses (routes cleanly removed).",
+    "No MongoDB _id leaks; all responses use projection {_id:0}.",
+    "No deprecated packages (expo-av / expo-barcode-scanner / expo-background-fetch); react-native-safe-area-context used correctly."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (17/17 iteration_22 verification tests + 45/45 regression = 62/62)",
+    "frontend": "100% (paper tab present + activatable + empty state + CTA rendering verified on mobile viewport 390x844)"
+  },
+  "seed_data_creation": "Created TEST_REVERT_{ts} medicine + TEST_زبون رجوع customer with 2 credit sales (60 + 40) and 2 receive payments (20 then 15) via API to prove ASC sort on the payment history endpoint.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration_22 verification is green. New test file /app/backend/tests/test_revert_and_paper_orders_tab.py locks in: customer payment ASC sort, supplier response shape reverted, /pay & /unpaid-invoices endpoints removed, outstanding formula = purchased − credit_applied, paper orders list projection excludes image_base64, paper orders detail returns image_base64. Reuse for future regression. Note: previous test file test_fifo_debt_payment.py will now partially FAIL on the TestSupplierFIFOPayment class (expected — those endpoints were removed per user's revert request); customer-side tests in that file still pass.",
+  "rca_of_issue": "N/A — feature revert + tab-add verification, no bugs."
+}

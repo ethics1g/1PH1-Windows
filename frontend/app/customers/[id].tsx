@@ -126,7 +126,7 @@ export default function CustomerDetail() {
         )}
 
         {/* Payment history */}
-        <Text style={styles.sectionTitle}>سجل الدفعات ({data.payments?.length || 0})</Text>
+        <Text style={styles.sectionTitle}>سجل الدفعات ({data.payments?.length || 0}) — الأقدم أولاً</Text>
         {(!data.payments || data.payments.length === 0) ? (
           <Text style={styles.emptyTxt}>لا توجد دفعات مسجلة</Text>
         ) : data.payments.map((p: any) => (

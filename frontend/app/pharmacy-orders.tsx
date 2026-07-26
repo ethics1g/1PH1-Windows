@@ -32,6 +32,7 @@ const FILTERS: Array<{ key: string; label: string }> = [
   { key: 'not_received', label: 'لم تُستلم' },
   { key: 'rejected', label: 'مرفوضة' },
   { key: 'returns', label: 'الرواجع' },
+  { key: 'paper', label: 'الطلبيات المصورة' },
 ];
 
 const fmt = (n: number) => Math.round(n || 0).toLocaleString();
@@ -41,6 +42,7 @@ export default function PharmacyOrders() {
   const router = useRouter();
   const [items, setItems] = useState<any[]>([]);
   const [returns, setReturns] = useState<any[]>([]);
+  const [papers, setPapers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState('all');
@@ -51,6 +53,11 @@ export default function PharmacyOrders() {
       if (filter === 'returns') {
         const r: any = await apiFetch('/returns', {}, token);
         setReturns(r.items || []);
+      } else if (filter === 'paper') {
+        // Paper (photographed) orders — image is archived per-order and viewable
+        // on the detail page. Keeps the same "طلباتي" surface as marketplace orders.
+        const r: any = await apiFetch('/orders/paper', {}, token);
+        setPapers(r.items || []);
       } else {
         const path = filter === 'all' ? '/pharmacy/orders' : `/pharmacy/orders?status=${filter}`;
         const res: any = await apiFetch(path, {}, token);
@@ -121,12 +128,66 @@ export default function PharmacyOrders() {
       </View>
 
       <FlatList
-        data={filter === 'returns' ? returns : items}
+        data={filter === 'returns' ? returns : filter === 'paper' ? papers : items}
         keyExtractor={(o) => o.id}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />}
         contentContainerStyle={{ padding: 12, gap: 10, paddingBottom: 30 }}
-        ListEmptyComponent={<Text style={styles.empty}>{filter === 'returns' ? 'لا توجد طلبات إرجاع' : 'لا توجد طلبيات'}</Text>}
+        ListEmptyComponent={
+          filter === 'paper' ? (
+            <View style={styles.paperEmpty}>
+              <Ionicons name="camera-outline" size={54} color={colors.textMuted} />
+              <Text style={styles.empty}>لا توجد طلبيات مصورة بعد</Text>
+              <TouchableOpacity testID="btn-scan-cta" style={styles.paperCta} onPress={() => router.push('/orders/scan' as any)}>
+                <Ionicons name="scan-outline" size={18} color="#fff" />
+                <Text style={styles.paperCtaTxt}>التقاط صورة طلبية</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={styles.empty}>{filter === 'returns' ? 'لا توجد طلبات إرجاع' : 'لا توجد طلبيات'}</Text>
+          )
+        }
         renderItem={({ item: o }) => {
+          // Paper (photographed) order card branch
+          if (filter === 'paper') {
+            const paidClr = o.payment_status === 'paid' ? '#16a34a' : o.payment_status === 'partial' ? '#d97706' : '#dc2626';
+            const paidBg  = o.payment_status === 'paid' ? '#dcfce7' : o.payment_status === 'partial' ? '#fef3c7' : '#fee2e2';
+            const paidLbl = o.payment_status === 'paid' ? 'مسددة' : o.payment_status === 'partial' ? 'جزئية' : 'غير مسددة';
+            return (
+              <TouchableOpacity testID={`paper-${o.id}`} style={styles.card} onPress={() => router.push(`/orders/paper/${o.id}` as any)}>
+                <View style={styles.row}>
+                  <View style={[styles.pill, { backgroundColor: paidBg }]}>
+                    <Text style={[styles.pillTxt, { color: paidClr }]}>{paidLbl}</Text>
+                  </View>
+                  <Text style={styles.dateTxt}>{new Date(o.created_at).toLocaleString('ar')}</Text>
+                </View>
+                <View style={styles.partyRow}>
+                  <View style={styles.paperThumb}>
+                    <Ionicons name="image" size={22} color={colors.primary} />
+                  </View>
+                  <View style={{ flex: 1, alignItems: 'flex-end' }}>
+                    <Text style={styles.partyName}>{o.supplier_name || 'مذخر غير محدد'}</Text>
+                    <Text style={styles.paperMeta}>{o.order_number}{o.invoice_number ? ` · فاتورة ${o.invoice_number}` : ''}</Text>
+                  </View>
+                </View>
+                <View style={styles.itemsBox}>
+                  {(o.items || []).slice(0, 3).map((it: any, i: number) => (
+                    <Text key={i} style={styles.itemLine}>• {it.name} × {it.quantity}</Text>
+                  ))}
+                  {(o.items?.length || 0) > 3 && <Text style={styles.muted}>...و {o.items.length - 3} صنف آخر</Text>}
+                </View>
+                <View style={styles.totalRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.totalLabel}>الإجمالي: {fmt(o.total)} د.ع</Text>
+                    <Text style={styles.totalLabel}>المدفوع: <Text style={{ color: '#16a34a' }}>{fmt(o.amount_paid)}</Text>  ·  المتبقي: <Text style={{ color: o.remaining > 0 ? '#dc2626' : '#16a34a' }}>{fmt(o.remaining)}</Text></Text>
+                  </View>
+                  <View style={styles.viewImgHint}>
+                    <Ionicons name="eye" size={14} color={colors.primary} />
+                    <Text style={styles.viewImgTxt}>عرض الصورة</Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            );
+          }
           // Return card branch
           if (filter === 'returns') {
             const meta = STATUS_META[o.status] || STATUS_META.pending;
@@ -254,4 +315,11 @@ const styles = StyleSheet.create({
   actionTxt: { color: '#fff', fontWeight: '800', fontSize: 13 },
   muted: { fontSize: 11, color: colors.textMuted, textAlign: 'center', padding: 4 },
   empty: { textAlign: 'center', color: colors.textMuted, padding: 40 },
+  paperEmpty: { alignItems: 'center', marginTop: 40, gap: 14 },
+  paperCta: { flexDirection: 'row-reverse', alignItems: 'center', gap: 8, backgroundColor: colors.primary, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 14 },
+  paperCtaTxt: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  paperThumb: { width: 44, height: 44, borderRadius: 10, backgroundColor: '#eef2ff', alignItems: 'center', justifyContent: 'center' },
+  paperMeta: { fontSize: 11, color: colors.textMuted, textAlign: 'right', marginTop: 2 },
+  viewImgHint: { flexDirection: 'row-reverse', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#eef2ff', borderRadius: 8 },
+  viewImgTxt: { fontSize: 11, fontWeight: '800', color: colors.primary },
 });
