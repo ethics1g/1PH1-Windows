@@ -7,7 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import ScreenHeader from '../../src/ScreenHeader';
 import { colors } from '../../src/theme';
 import { apiFetch, useAuth } from '../../src/auth';
@@ -58,12 +58,33 @@ export default function ExcelImport() {
       setParsing(true);
       let base64 = '';
       if ((asset as any).base64) {
-        base64 = (asset as any).base64;
+        // Web / some pickers already return base64
+        base64 = String((asset as any).base64).replace(/^data:[^;]+;base64,/, '');
       } else {
-        base64 = await FileSystem.readAsStringAsync(asset.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
+        // Native: use legacy FileSystem API (Expo SDK 54+)
+        try {
+          const enc = (FileSystem as any).EncodingType?.Base64 ?? 'base64';
+          base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: enc });
+        } catch (readErr: any) {
+          // Fallback: fetch the uri and convert to base64 via blob/FileReader
+          try {
+            const resp = await fetch(asset.uri);
+            const blob = await resp.blob();
+            base64 = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onerror = () => reject(reader.error);
+              reader.onload = () => {
+                const s = String(reader.result || '');
+                resolve(s.replace(/^data:[^;]+;base64,/, ''));
+              };
+              reader.readAsDataURL(blob);
+            });
+          } catch (fallbackErr: any) {
+            throw new Error(readErr?.message || fallbackErr?.message || 'تعذر قراءة الملف');
+          }
+        }
       }
+      if (!base64) throw new Error('الملف فارغ أو تعذر قراءته');
       const res: any = await apiFetch('/orders/excel/preview', {
         method: 'POST',
         body: JSON.stringify({ filename: asset.name || 'file', file_base64: base64 }),
