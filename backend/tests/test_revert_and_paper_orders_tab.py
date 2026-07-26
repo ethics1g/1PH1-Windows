@@ -119,80 +119,10 @@ class TestCustomerFIFOKept:
 # =====================================================================
 # 2. Supplier debts fully reverted
 # =====================================================================
-class TestSupplierReverted:
-
-    def test_01_find_supplier_with_orders(self, h, state):
-        r = requests.get(f"{API}/accounting/supplier-accounts", headers=h, timeout=15)
-        assert r.status_code == 200, r.text
-        items = r.json().get("items", [])
-        if not items:
-            pytest.skip("No supplier accounts to test against")
-        # Prefer one with outstanding > 0
-        chosen = next((s for s in items if s.get("outstanding_balance", 0) > 0), items[0])
-        state["sid"] = chosen["supplier_id"]
-        state["initial_out"] = chosen.get("outstanding_balance", 0)
-        state["total_purchased"] = chosen.get("total_purchased", 0)
-        state["credit_applied"] = chosen.get("credit_applied_total", 0)
-
-    def test_02_account_response_has_no_new_fields(self, h, state):
-        sid = state["sid"]
-        r = requests.get(f"{API}/accounting/supplier-accounts/{sid}",
-                         headers=h, timeout=15)
-        assert r.status_code == 200, r.text
-        j = r.json()
-        # Top-level keys: account, ledger, orders, returns (NO paper_orders)
-        assert "paper_orders" not in j, f"paper_orders leaked at top level: keys={list(j.keys())}"
-        acct = j["account"]
-        # These enrichment fields should be GONE
-        for forbidden in ("invoices_paid_total", "paper_purchased", "marketplace_purchased"):
-            assert forbidden not in acct, f"forbidden field '{forbidden}' present in account: {acct}"
-        # Required legacy fields still present
-        for req in ("total_purchased", "credit_applied_total", "outstanding_balance",
-                    "available_credit", "supplier_id", "pharmacy_id"):
-            assert req in acct, f"missing legacy field '{req}': {acct}"
-
-    def test_03_orders_have_no_enrichment_fields(self, h, state):
-        sid = state["sid"]
-        r = requests.get(f"{API}/accounting/supplier-accounts/{sid}",
-                         headers=h, timeout=15)
-        orders = r.json().get("orders", [])
-        # If pharmacy has no orders with this supplier, skip — but we picked
-        # a supplier with orders.
-        if not orders:
-            pytest.skip("no orders returned")
-        allowed_keys = {"id", "total", "total_cost", "created_at", "completed_at",
-                        "items", "commit_id"}
-        for o in orders:
-            # Enrichment fields must NOT be there
-            for forbidden in ("paid_amount", "outstanding", "payment_status", "order_number"):
-                assert forbidden not in o, \
-                    f"forbidden field '{forbidden}' present in order {o.get('id')}: {list(o.keys())}"
-            # Only allowed keys (subset check)
-            extra = set(o.keys()) - allowed_keys
-            assert not extra, f"unexpected extra keys in order: {extra}"
-
-    def test_04_pay_endpoint_removed(self, h, state):
-        sid = state["sid"]
-        r = requests.post(f"{API}/accounting/supplier-accounts/{sid}/pay",
-                          json={"amount": 1.0}, headers=h, timeout=15)
-        assert r.status_code in (404, 405), \
-            f"POST supplier-accounts/{sid}/pay should be removed, got {r.status_code}: {r.text}"
-
-    def test_05_unpaid_invoices_endpoint_removed(self, h, state):
-        sid = state["sid"]
-        r = requests.get(f"{API}/accounting/supplier-accounts/{sid}/unpaid-invoices",
-                         headers=h, timeout=15)
-        assert r.status_code in (404, 405), \
-            f"GET unpaid-invoices should be removed, got {r.status_code}: {r.text}"
-
-    def test_06_outstanding_formula_matches_purchased_minus_credit(self, h, state):
-        sid = state["sid"]
-        r = requests.get(f"{API}/accounting/supplier-accounts/{sid}",
-                         headers=h, timeout=15)
-        acct = r.json()["account"]
-        expected = max(0.0, round(acct["total_purchased"] - acct["credit_applied_total"], 2))
-        assert abs(acct["outstanding_balance"] - expected) < 0.02, \
-            f"formula mismatch: outstanding={acct['outstanding_balance']} vs expected={expected}"
+# NOTE (iter 23): Supplier FIFO 'تسديد دين' was RESTORED per user request +
+# extended to paper-order-only suppliers. Tests kept only for historical
+# reference. Coverage now lives in test_fifo_debt_payment.py and
+# test_supplier_fifo_paper_only.py.
 
 
 # =====================================================================
