@@ -60,6 +60,13 @@ class CustomerPaymentIn(BaseModel):
     notes: Optional[str] = Field(None, max_length=500)
 
 
+class SupplierPaymentIn(BaseModel):
+    """FIFO supplier debt payment — amount is auto-allocated to oldest
+    unpaid invoices first (marketplace + paper orders)."""
+    amount: float = Field(..., gt=0)
+    notes: Optional[str] = Field(None, max_length=500)
+
+
 class BuyExtendedIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     barcode: Optional[str] = Field(None, max_length=64)
@@ -142,22 +149,41 @@ def _sale_totals(items: List[Dict[str, Any]]) -> Dict[str, float]:
 # ==== Supplier Accounts (pharmacy → supplier payable + credits) ======
 # =====================================================================
 
-async def _pharmacy_supplier_debit(pharmacy_id: str, supplier_id: str) -> float:
+async def _pharmacy_supplier_debit(pharmacy_id: str, supplier_id: str) -> Dict[str, float]:
     """Sum of `total` from all completed orders between this pharmacy and supplier.
-    Falls back to `total_cost` for legacy docs."""
+    Falls back to `total_cost` for legacy docs. Also returns paid_amount total
+    (per-invoice payments made toward these orders — FIFO debt payment system).
+    Returns dict {debit, paid}."""
     pipeline = [
         {"$match": {"pharmacy_id": pharmacy_id, "supplier_id": supplier_id,
                     "status": "completed"}},
         {"$group": {"_id": None,
-                    "total": {"$sum": {"$ifNull": ["$total", "$total_cost"]}}}},
+                    "total": {"$sum": {"$ifNull": ["$total", "$total_cost"]}},
+                    "paid": {"$sum": {"$ifNull": ["$paid_amount", 0]}}}},
     ]
     async for r in _db.orders.aggregate(pipeline):
-        return float(r.get("total", 0) or 0)
-    return 0.0
+        return {"debit": float(r.get("total", 0) or 0),
+                "paid": float(r.get("paid", 0) or 0)}
+    return {"debit": 0.0, "paid": 0.0}
+
+
+async def _paper_orders_debit(pharmacy_id: str, supplier_id: str) -> Dict[str, float]:
+    """Sum of `total` and `amount_paid` across paper orders for FIFO debt."""
+    pipeline = [
+        {"$match": {"pharmacy_id": pharmacy_id, "supplier_id": supplier_id}},
+        {"$group": {"_id": None,
+                    "total": {"$sum": {"$ifNull": ["$total", 0]}},
+                    "paid": {"$sum": {"$ifNull": ["$amount_paid", 0]}}}},
+    ]
+    async for r in _db.paper_orders.aggregate(pipeline):
+        return {"debit": float(r.get("total", 0) or 0),
+                "paid": float(r.get("paid", 0) or 0)}
+    return {"debit": 0.0, "paid": 0.0}
 
 
 async def _read_supplier_account(pharmacy_id: str, supplier_id: str) -> Dict[str, Any]:
-    """Compute live balance: debit (completed orders) − credit (applied returns)."""
+    """Compute live balance: (marketplace debit + paper debit) − paid_amount − credit_applied.
+    Additive: legacy orders without paid_amount count as 0 paid (same as before)."""
     acct = await _db.supplier_accounts.find_one(
         {"pharmacy_id": pharmacy_id, "supplier_id": supplier_id}, {"_id": 0},
     )
@@ -168,13 +194,19 @@ async def _read_supplier_account(pharmacy_id: str, supplier_id: str) -> Dict[str
             "applied_return_ids": [], "updated_at": _now_iso(),
         }
         await _db.supplier_accounts.insert_one(acct.copy())
-    debit = await _pharmacy_supplier_debit(pharmacy_id, supplier_id)
+    mp = await _pharmacy_supplier_debit(pharmacy_id, supplier_id)
+    pp = await _paper_orders_debit(pharmacy_id, supplier_id)
+    debit = mp["debit"] + pp["debit"]
+    invoices_paid = mp["paid"] + pp["paid"]
     credit_applied = float(acct.get("credit_applied_total", 0) or 0)
-    outstanding = max(0.0, round(debit - credit_applied, 2))
+    outstanding = max(0.0, round(debit - invoices_paid - credit_applied, 2))
     return {
         "pharmacy_id": pharmacy_id,
         "supplier_id": supplier_id,
-        "total_purchased": round(debit, 2),           # الإجمالي المُشترى (طلبيات مكتملة)
+        "total_purchased": round(debit, 2),           # الإجمالي المُشترى (marketplace + paper)
+        "marketplace_purchased": round(mp["debit"], 2),
+        "paper_purchased": round(pp["debit"], 2),
+        "invoices_paid_total": round(invoices_paid, 2),  # NEW: مجموع الدفعات على الفواتير
         "credit_applied_total": round(credit_applied, 2),  # قيمة الرواجع المطبَّقة
         "outstanding_balance": outstanding,            # الرصيد الحالي الواجب دفعه
         "available_credit": round(acct.get("available_credit", 0) or 0, 2),  # رصيد دائن جاهز
@@ -222,7 +254,8 @@ async def apply_return_credit(pharmacy_id: str, supplier_id: str,
         return {"status": "already_applied", "return_id": return_id}
 
     # Post-adjust: if new credit_applied > debit → excess flows to available_credit
-    debit = await _pharmacy_supplier_debit(pharmacy_id, supplier_id)
+    debit_info = await _pharmacy_supplier_debit(pharmacy_id, supplier_id)
+    debit = debit_info["debit"]
     new_credit_applied = float(upd_res.get("credit_applied_total", 0) or 0)
     excess = 0.0
     if new_credit_applied > debit:
@@ -575,23 +608,84 @@ def install_routes(require_role):
     @router_accounting.post("/customers/{cid}/payment")
     async def _record_payment(cid: str, data: CustomerPaymentIn,
                               user: dict = Depends(require_role("pharmacy"))):
+        """FIFO customer debt payment — pays oldest unpaid credit sale first,
+        then the next, until amount is exhausted. Records per-invoice
+        allocations so the audit trail shows exactly which invoices were
+        settled and by how much. Never reorders existing invoices."""
         cust = await _db.customers.find_one({"id": cid, "pharmacy_id": user["sub"]}, {"_id": 0})
         if not cust:
             raise HTTPException(404, "الزبون غير موجود")
-        remaining = float(cust.get("remaining_balance", 0.0))
-        if data.amount > remaining + 0.001:
-            raise HTTPException(400, f"المبلغ المدخل ({data.amount}) أكبر من الرصيد المتبقي ({remaining:.2f})")
-        new_remaining = round(remaining - data.amount, 2)
-        new_status = "paid" if new_remaining <= 0.001 else "active"
+        remaining_balance = float(cust.get("remaining_balance", 0.0))
+        if remaining_balance <= 0.001:
+            raise HTTPException(400, "لا يوجد دين متبقٍ على هذا الزبون")
+        if data.amount > remaining_balance + 0.001:
+            raise HTTPException(400, f"المبلغ المدخل ({data.amount:.2f}) أكبر من الرصيد المتبقي ({remaining_balance:.2f})")
+
+        # Fetch unpaid credit sales for this customer, OLDEST FIRST (FIFO).
+        # Do not include cash sales (outstanding is always 0 there anyway).
+        sales_cursor = _db.sales.find(
+            {"pharmacy_id": user["sub"], "customer_id": cid,
+             "outstanding": {"$gt": 0.001}},
+            {"_id": 0, "id": 1, "outstanding": 1, "amount_paid": 1,
+             "revenue": 1, "total": 1, "created_at": 1},
+        ).sort("created_at", 1)  # ASC → oldest first, order preserved
+
+        unpaid_sales = [s async for s in sales_cursor]
+        amount_left = round(float(data.amount), 2)
+        allocations: List[Dict[str, Any]] = []
         now_iso = _now_iso()
+
+        for sale in unpaid_sales:
+            if amount_left <= 0.001:
+                break
+            sale_outstanding = float(sale.get("outstanding", 0.0))
+            if sale_outstanding <= 0.001:
+                continue
+            take = round(min(amount_left, sale_outstanding), 2)
+            new_sale_outstanding = round(sale_outstanding - take, 2)
+            new_sale_paid = round(float(sale.get("amount_paid", 0.0)) + take, 2)
+            fully_paid = new_sale_outstanding <= 0.005
+
+            await _db.sales.update_one(
+                {"id": sale["id"], "pharmacy_id": user["sub"]},
+                {"$set": {"outstanding": new_sale_outstanding,
+                          "amount_paid": new_sale_paid,
+                          "debt_status": "paid" if fully_paid else "partial",
+                          "last_payment_at": now_iso}},
+            )
+            allocations.append({
+                "sale_id": sale["id"],
+                "sale_date": sale.get("created_at"),
+                "invoice_total": round(float(sale.get("revenue") or sale.get("total") or 0), 2),
+                "previous_outstanding": round(sale_outstanding, 2),
+                "amount_applied": take,
+                "new_outstanding": new_sale_outstanding,
+                "fully_paid": fully_paid,
+            })
+            amount_left = round(amount_left - take, 2)
+
+        applied_total = round(float(data.amount) - amount_left, 2)
+        # Defensive fallback: legacy customers may have remaining_balance without
+        # matching unpaid sales rows (data drift). In that case apply the payment
+        # to the aggregate only so the UI never dead-ends on such records.
+        if applied_total < float(data.amount) - 0.01 and not allocations:
+            applied_total = round(min(float(data.amount), remaining_balance), 2)
+        new_remaining = round(remaining_balance - applied_total, 2)
+        new_status = "paid" if new_remaining <= 0.005 else "active"
+
         payment = {
             "id": str(uuid.uuid4()),
             "pharmacy_id": user["sub"],
             "customer_id": cid,
-            "amount": round(data.amount, 2),
+            "amount": applied_total,
             "kind": "receive",
             "notes": (data.notes or "")[:500] or None,
             "remaining_after": new_remaining,
+            "allocations": allocations,               # NEW: FIFO trail
+            "invoices_fully_paid": sum(1 for a in allocations if a["fully_paid"]),
+            "invoices_partial": sum(1 for a in allocations if not a["fully_paid"]),
+            "recorded_by": user.get("sub"),           # NEW: audit
+            "recorded_by_name": user.get("name") or user.get("phone"),
             "created_at": now_iso,
         }
         await _db.customer_payments.insert_one(payment.copy())
@@ -599,12 +693,14 @@ def install_routes(require_role):
             {"id": cid},
             {"$set": {"remaining_balance": new_remaining, "status": new_status,
                       "last_payment_at": now_iso},
-             "$inc": {"total_paid": round(data.amount, 2)}},
+             "$inc": {"total_paid": applied_total}},
         )
         payment.pop("_id", None)
         return {"status": "ok", "payment": payment,
                 "customer_status": new_status,
-                "remaining_balance": new_remaining}
+                "remaining_balance": new_remaining,
+                "amount_applied": applied_total,
+                "allocations": allocations}
 
     # -------------- Supplier Accounts (pharmacy → supplier payable) --------------
     @router_accounting.get("/accounting/supplier-accounts")
@@ -642,7 +738,8 @@ def install_routes(require_role):
     @router_accounting.get("/accounting/supplier-accounts/{supplier_id}")
     async def _get_supplier_account(supplier_id: str,
                                     user: dict = Depends(require_role("pharmacy"))):
-        """Detailed statement: balance + ledger + related orders + returns."""
+        """Detailed statement: balance + ledger + related orders + returns.
+        Orders now include per-invoice paid_amount + outstanding for FIFO UI."""
         acct = await _read_supplier_account(user["sub"], supplier_id)
         supplier = await _db.suppliers.find_one({"id": supplier_id}, {"_id": 0, "id": 1, "name": 1, "phone": 1})
         acct["supplier"] = supplier
@@ -652,14 +749,35 @@ def install_routes(require_role):
             {"pharmacy_id": user["sub"], "supplier_id": supplier_id}, {"_id": 0},
         ).sort("created_at", -1).limit(500):
             ledger.append(l)
-        # Related orders
+        # Related orders — enriched with paid_amount + outstanding + invoice_number
         orders = []
         async for o in _db.orders.find(
             {"pharmacy_id": user["sub"], "supplier_id": supplier_id, "status": "completed"},
             {"_id": 0, "id": 1, "total": 1, "total_cost": 1, "created_at": 1,
-             "completed_at": 1, "items": 1, "commit_id": 1},
+             "completed_at": 1, "items": 1, "commit_id": 1,
+             "paid_amount": 1, "payment_status": 1, "order_number": 1},
         ).sort("created_at", -1).limit(200):
+            total = float(o.get("total") or o.get("total_cost") or 0)
+            paid = float(o.get("paid_amount", 0) or 0)
+            o["total"] = round(total, 2)
+            o["paid_amount"] = round(paid, 2)
+            o["outstanding"] = round(max(0.0, total - paid), 2)
+            if o["outstanding"] <= 0.005 and total > 0:
+                o["payment_status"] = "paid"
+            elif paid > 0:
+                o["payment_status"] = "partial"
+            else:
+                o["payment_status"] = o.get("payment_status") or "unpaid"
             orders.append(o)
+        # Related paper orders (unified debt view)
+        paper_orders = []
+        async for p in _db.paper_orders.find(
+            {"pharmacy_id": user["sub"], "supplier_id": supplier_id},
+            {"_id": 0, "id": 1, "order_number": 1, "invoice_number": 1,
+             "invoice_date": 1, "total": 1, "amount_paid": 1, "remaining": 1,
+             "payment_status": 1, "created_at": 1},
+        ).sort("created_at", -1).limit(200):
+            paper_orders.append(p)
         # Related returns
         returns = []
         async for r in _db.returns.find(
@@ -668,4 +786,193 @@ def install_routes(require_role):
              "reason": 1, "items": 1},
         ).sort("created_at", -1).limit(200):
             returns.append(r)
-        return {"account": acct, "ledger": ledger, "orders": orders, "returns": returns}
+        return {"account": acct, "ledger": ledger, "orders": orders,
+                "paper_orders": paper_orders, "returns": returns}
+
+    # ---------------- SUPPLIER FIFO DEBT PAYMENT ---------------------------
+    @router_accounting.get("/accounting/supplier-accounts/{supplier_id}/unpaid-invoices")
+    async def _list_unpaid_supplier_invoices(supplier_id: str,
+                                             user: dict = Depends(require_role("pharmacy"))):
+        """Returns unpaid invoices (marketplace orders + paper orders) for the
+        supplier, sorted OLDEST FIRST (FIFO). Used by the pay screen to
+        preview which invoices will be settled by a given payment amount."""
+        invoices: List[Dict[str, Any]] = []
+        # Marketplace orders
+        async for o in _db.orders.find(
+            {"pharmacy_id": user["sub"], "supplier_id": supplier_id, "status": "completed"},
+            {"_id": 0, "id": 1, "total": 1, "total_cost": 1, "paid_amount": 1,
+             "created_at": 1, "completed_at": 1, "order_number": 1, "commit_id": 1},
+        ):
+            total = float(o.get("total") or o.get("total_cost") or 0)
+            paid = float(o.get("paid_amount", 0) or 0)
+            outstanding = round(max(0.0, total - paid), 2)
+            if outstanding > 0.005:
+                invoices.append({
+                    "type": "marketplace",
+                    "id": o["id"],
+                    "invoice_number": o.get("order_number") or (o.get("commit_id") or o["id"])[:8].upper(),
+                    "total": round(total, 2),
+                    "paid_amount": round(paid, 2),
+                    "outstanding": outstanding,
+                    "created_at": o.get("created_at"),
+                })
+        # Paper orders
+        async for p in _db.paper_orders.find(
+            {"pharmacy_id": user["sub"], "supplier_id": supplier_id},
+            {"_id": 0, "id": 1, "total": 1, "amount_paid": 1, "remaining": 1,
+             "created_at": 1, "order_number": 1, "invoice_number": 1},
+        ):
+            outstanding = float(p.get("remaining", 0) or 0)
+            if outstanding > 0.005:
+                invoices.append({
+                    "type": "paper",
+                    "id": p["id"],
+                    "invoice_number": p.get("invoice_number") or p.get("order_number") or p["id"][:8].upper(),
+                    "total": round(float(p.get("total", 0) or 0), 2),
+                    "paid_amount": round(float(p.get("amount_paid", 0) or 0), 2),
+                    "outstanding": round(outstanding, 2),
+                    "created_at": p.get("created_at"),
+                })
+        # FIFO sort: oldest first (by created_at ASC)
+        invoices.sort(key=lambda x: (x.get("created_at") or ""))
+        total_out = round(sum(i["outstanding"] for i in invoices), 2)
+        return {"invoices": invoices, "count": len(invoices),
+                "total_outstanding": total_out}
+
+    @router_accounting.post("/accounting/supplier-accounts/{supplier_id}/pay")
+    async def _pay_supplier_fifo(supplier_id: str, data: SupplierPaymentIn,
+                                 user: dict = Depends(require_role("pharmacy"))):
+        """FIFO supplier debt payment — allocates `amount` to oldest unpaid
+        invoices first (marketplace + paper orders combined). Preserves the
+        original invoice order strictly by created_at ASC. Records:
+          - Per-invoice allocation entries (fully/partially paid)
+          - Master supplier_ledger entry with kind='pharmacy_payment'
+          - Audit fields: recorded_by, notes, timestamp
+        Never mutates historical orders' totals or dates — only paid_amount."""
+        if data.amount <= 0:
+            raise HTTPException(400, "المبلغ غير صالح")
+
+        # Load ALL unpaid invoices FIFO (oldest first). Same logic as the GET
+        # endpoint above, but inline to avoid double-fetch.
+        invoices: List[Dict[str, Any]] = []
+        async for o in _db.orders.find(
+            {"pharmacy_id": user["sub"], "supplier_id": supplier_id, "status": "completed"},
+            {"_id": 0, "id": 1, "total": 1, "total_cost": 1, "paid_amount": 1,
+             "created_at": 1, "order_number": 1, "commit_id": 1},
+        ):
+            total = float(o.get("total") or o.get("total_cost") or 0)
+            paid = float(o.get("paid_amount", 0) or 0)
+            outstanding = round(max(0.0, total - paid), 2)
+            if outstanding > 0.005:
+                invoices.append({"type": "marketplace", **o,
+                                 "total": total, "paid_amount": paid,
+                                 "outstanding": outstanding})
+        async for p in _db.paper_orders.find(
+            {"pharmacy_id": user["sub"], "supplier_id": supplier_id},
+            {"_id": 0, "id": 1, "total": 1, "amount_paid": 1, "remaining": 1,
+             "created_at": 1, "order_number": 1, "invoice_number": 1, "payments": 1},
+        ):
+            outstanding = float(p.get("remaining", 0) or 0)
+            if outstanding > 0.005:
+                invoices.append({"type": "paper", **p,
+                                 "outstanding": round(outstanding, 2)})
+
+        if not invoices:
+            raise HTTPException(400, "لا توجد فواتير مستحقة الدفع لهذا المذخر")
+
+        invoices.sort(key=lambda x: (x.get("created_at") or ""))
+
+        total_available = round(sum(i["outstanding"] for i in invoices), 2)
+        if data.amount > total_available + 0.01:
+            raise HTTPException(400,
+                f"المبلغ المدخل ({data.amount:.2f}) أكبر من الرصيد المتبقي ({total_available:.2f})")
+
+        amount_left = round(float(data.amount), 2)
+        allocations: List[Dict[str, Any]] = []
+        now_iso = _now_iso()
+        payment_master_id = str(uuid.uuid4())
+
+        for inv in invoices:
+            if amount_left <= 0.001:
+                break
+            inv_out = float(inv["outstanding"])
+            take = round(min(amount_left, inv_out), 2)
+            new_out = round(inv_out - take, 2)
+            fully_paid = new_out <= 0.005
+
+            if inv["type"] == "marketplace":
+                new_paid = round(float(inv.get("paid_amount", 0) or 0) + take, 2)
+                new_status = "paid" if fully_paid else "partial"
+                await _db.orders.update_one(
+                    {"id": inv["id"], "pharmacy_id": user["sub"]},
+                    {"$set": {"paid_amount": new_paid,
+                              "payment_status": new_status,
+                              "last_payment_at": now_iso}},
+                )
+                inv_number = inv.get("order_number") or (inv.get("commit_id") or inv["id"])[:8].upper()
+            else:  # paper
+                new_paid = round(float(inv.get("amount_paid", 0) or 0) + take, 2)
+                new_status = "paid" if fully_paid else "partial"
+                sub_payment = {
+                    "id": str(uuid.uuid4()),
+                    "amount": take,
+                    "at": now_iso,
+                    "notes": f"دفعة ضمن تسديد شامل — {(data.notes or '').strip() or '-'}",
+                    "master_payment_id": payment_master_id,
+                }
+                await _db.paper_orders.update_one(
+                    {"id": inv["id"], "pharmacy_id": user["sub"]},
+                    {"$set": {"amount_paid": new_paid,
+                              "remaining": new_out,
+                              "payment_status": new_status,
+                              "last_payment_at": now_iso},
+                     "$push": {"payments": sub_payment}},
+                )
+                inv_number = inv.get("invoice_number") or inv.get("order_number") or inv["id"][:8].upper()
+
+            allocations.append({
+                "invoice_type": inv["type"],
+                "invoice_id": inv["id"],
+                "invoice_number": inv_number,
+                "invoice_date": inv.get("created_at"),
+                "invoice_total": round(float(inv.get("total", 0) or 0), 2),
+                "previous_outstanding": round(inv_out, 2),
+                "amount_applied": take,
+                "new_outstanding": new_out,
+                "fully_paid": fully_paid,
+            })
+            amount_left = round(amount_left - take, 2)
+
+        applied_total = round(float(data.amount) - amount_left, 2)
+
+        # Master ledger entry for audit (mirrors customer_payments pattern)
+        ledger_entry = {
+            "id": payment_master_id,
+            "pharmacy_id": user["sub"],
+            "supplier_id": supplier_id,
+            "kind": "pharmacy_payment",
+            "amount": applied_total,
+            "description": (data.notes or "").strip() or "تسديد دين للمذخر (FIFO)",
+            "reference_type": "supplier_payment",
+            "reference_id": payment_master_id,
+            "allocations": allocations,
+            "invoices_fully_paid": sum(1 for a in allocations if a["fully_paid"]),
+            "invoices_partial": sum(1 for a in allocations if not a["fully_paid"]),
+            "recorded_by": user.get("sub"),
+            "recorded_by_name": user.get("name") or user.get("phone"),
+            "created_at": now_iso,
+            "ts": now_iso,
+        }
+        await _db.supplier_ledger.insert_one(ledger_entry.copy())
+        ledger_entry.pop("_id", None)
+
+        # Refresh account
+        acct = await _read_supplier_account(user["sub"], supplier_id)
+        return {
+            "status": "ok",
+            "payment": ledger_entry,
+            "amount_applied": applied_total,
+            "allocations": allocations,
+            "remaining_balance": acct["outstanding_balance"],
+            "supplier_status": "paid" if acct["outstanding_balance"] <= 0.005 else "active",
+        }

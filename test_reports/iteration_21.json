@@ -1,0 +1,41 @@
+{
+  "summary": "Full end-to-end verification of the new FIFO debt payment feature (customers + suppliers). Backend: 22/22 new tests in test_fifo_debt_payment.py PASSED covering FIFO allocation, per-invoice allocations[], partial vs full payment, overpayment 400 guard, customer.status → 'paid', supplier_ledger kind='pharmacy_payment', /unpaid-invoices FIFO ordering, enriched supplier account (paper_orders, paid_amount, payment_status). Regression: 55/55 (test_paper_orders 20/20, test_fifo_inventory 10/10, test_returns_flow 25/25). Frontend web preview: /customers/[id] loads with 'تسديد دين' button + FIFO hint + all testIDs (pay-amount, btn-full-amount, btn-receive, pay-notes) + shows جزئي badges on sales; /accounting/supplier-accounts/[supplierId] loads with 4 balance cards, تسديد دين box, expandable 35 unpaid invoices, payment history with allocations, returns section — all testIDs (pay-amount, btn-full-amount, btn-pay-supplier, btn-toggle-invoices) found. No red-screen errors, no runtime crashes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_fifo_debt_payment.py",
+    "/app/test_reports/pytest/pytest_fifo_debt_payment.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "accounting.py L608-703 — Customer FIFO payment loop: sales sorted by created_at ASC, take = min(amount_left, sale_outstanding), fully_paid boolean, per-invoice allocation dict, defensive fallback for legacy data drift. Correct.",
+    "accounting.py L842-978 — Supplier FIFO payment merges marketplace + paper orders into a single FIFO stream sorted by created_at ASC. Marketplace uses paid_amount; paper orders push a sub_payment record and update amount_paid/remaining/payment_status. Master ledger entry with kind='pharmacy_payment' + allocations[] + recorded_by. Clean, matches customer pattern.",
+    "accounting.py L184-215 — _read_supplier_account outstanding formula = (marketplace + paper debit) − invoices_paid − credit_applied. Backwards-compatible: legacy docs without paid_amount count as 0. Correct.",
+    "accounting.py L738-790 — GET supplier-accounts/{sid} enriches each order with paid_amount + outstanding + payment_status (paid/partial/unpaid) and adds paper_orders[]. This gives the UI everything it needs for status badges without extra fetches.",
+    "accounting.py L620 — Zero-debt guard raises 400 'لا يوجد دين متبقٍ على هذا الزبون'. Verified.",
+    "accounting.py L621 — Overpayment guard uses 0.001 tolerance. Verified.",
+    "accounting.py L886 — Supplier overpayment guard uses 0.01 tolerance. Verified.",
+    "customers/[id].tsx L106-119 — Full testID coverage (pay-amount, btn-full-amount, pay-notes, btn-receive). Alert shows FIFO breakdown per allocation. Correct.",
+    "supplier-accounts/[supplierId].tsx L115-152 — Expandable unpaid invoices list with FIFO indices, testID on toggle + pay button + input, dual paper/marketplace invoice_type icons in allocations. Well-designed.",
+    "Both frontend files use react-native-safe-area-context (correct in Expo SDK 54), StyleSheet.create, all text wrapped in <Text>, no deprecated packages. No expo-av / expo-barcode-scanner / expo-background-fetch usage.",
+    "No MongoDB _id leaking in any endpoint tested. All responses use projection {_id: 0}."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (22/22 new FIFO debt tests + 55/55 regression = 77/77)",
+    "frontend": "100% (both /customers/[id] and /accounting/supplier-accounts/[supplierId] load and render with all testIDs on mobile viewport)"
+  },
+  "seed_data_creation": "Created TEST_FIFO_DEBT_* medicine + TEST_زبون تجريبي FIFO customer with 3 credit sales that were fully paid via FIFO across 3 payments in the test. Also created 1 TEST_UI_زبون customer for UI verification. Existing 'مذخر النور' supplier used for supplier FIFO tests (partial payment applied to oldest invoice).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "FIFO debt payment feature is fully working — both endpoints and frontend screens. New test file /app/backend/tests/test_fifo_debt_payment.py has 22 tests covering all scenarios; reuse for future regression. Backend endpoints: POST /api/customers/{cid}/payment now returns 'allocations' list; POST /api/accounting/supplier-accounts/{sid}/pay is NEW; GET /api/accounting/supplier-accounts/{sid}/unpaid-invoices is NEW. supplier_ledger has new kind='pharmacy_payment' entries (distinct from 'return_credit'). Frontend testIDs to remember: customer screen — pay-amount, btn-full-amount, btn-receive, pay-notes, pay-<id>; supplier screen — pay-amount, btn-full-amount, btn-pay-supplier, btn-toggle-invoices, inv-<idx>, pay-hist-<id>.",
+  "rca_of_issue": "N/A — this was a feature-add verification, not a bug fix. No regressions introduced."
+}
