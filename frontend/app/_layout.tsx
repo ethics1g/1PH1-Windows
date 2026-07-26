@@ -5,6 +5,7 @@ import * as Notifications from 'expo-notifications';
 import * as Linking from 'expo-linking';
 import { AuthProvider } from '../src/auth';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { ExternalScannerProvider } from '../src/externalScanner';
 import { StatusBar } from 'expo-status-bar';
 
 // -------------------------------------------------------------------
@@ -66,6 +67,7 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
+        <ExternalScannerProvider>
         <StatusBar style="dark" />
         <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
           <Stack.Screen name="index" />
@@ -109,6 +111,7 @@ export default function RootLayout() {
           <Stack.Screen name="accounting/supplier-accounts/[supplierId]" />
           <Stack.Screen name="accounting/profit-report" />
         </Stack>
+        </ExternalScannerProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

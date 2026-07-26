@@ -1728,3 +1728,44 @@ agent_communication:
         debt ledger mirror. Frontend: scan/review/list/detail/pay screens
         + debts screen supplier tab + drawer link. Zero changes to
         existing inventory/FIFO/customer-debts code paths.
+
+# =====================================================================
+# ITERATION: EXTERNAL BARCODE SCANNER SUPPORT — 2026-07
+# =====================================================================
+frontend:
+  - task: "External USB / Bluetooth HID barcode scanner support"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/externalScanner.tsx, /app/frontend/app/_layout.tsx, /app/frontend/app/sell.tsx, /app/frontend/app/buy.tsx, /app/frontend/app/inventory.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Added a NEW ExternalScannerProvider mounted at the app root
+          (_layout.tsx). Two capture strategies transparently selected:
+            * Web: `document.addEventListener('keydown', ...)` — detects
+              burst < 60ms between keys ending in Enter → emits the code.
+            * Native (iOS/Android): renders a 0×0 hidden TextInput that
+              auto-focuses when any screen is subscribed; HID keyboards
+              route their events to it, `onSubmitEditing` fires the code.
+          A `useExternalScanner(cb, { enabled })` hook lets any screen
+          subscribe with zero prop drilling. Cleanup on unmount.
+
+          Wired into sell.tsx, buy.tsx, inventory.tsx — reuses each
+          screen's EXISTING handleBarcode/search logic. NO changes to
+          the backend, NO changes to the existing camera scanner
+          (MedicineScanner) or POS/inventory/purchase flows.
+
+          Extensible: future SDK-based scanners (Zebra DataWedge, etc.)
+          can register alongside without breaking existing consumers —
+          just register another handler in the provider or emit into it.
+
+test_plan:
+  current_focus:
+    - "External USB / Bluetooth HID barcode scanner support"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"

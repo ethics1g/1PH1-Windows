@@ -9,6 +9,7 @@ import { colors } from '../src/theme';
 import ScreenHeader from '../src/ScreenHeader';
 import MedicineScanner from '../src/MedicineScanner';
 import MedicineAutocomplete from '../src/MedicineAutocomplete';
+import { useExternalScanner } from '../src/externalScanner';
 
 type CartItem = { medicine_id: string; name: string; price: number; quantity: number; stock: number };
 
@@ -52,6 +53,10 @@ export default function Sell() {
       setBusy(false);
     }
   };
+
+  // Listen for external (USB/Bluetooth HID) barcode scanners.
+  // Enabled whenever the modal scanner is NOT open (to avoid double reads).
+  useExternalScanner(handleBarcode, { enabled: !scannerOpen && !busy });
 
   const handleImage = async (base64: string) => {
     setBusy(true);

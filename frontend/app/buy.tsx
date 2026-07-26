@@ -12,6 +12,7 @@ import ScreenHeader from '../src/ScreenHeader';
 import MedicineScanner from '../src/MedicineScanner';
 import ExpiryDateField from '../src/ExpiryDateField';
 import { normalizeExpiryDate } from '../src/utils/dateUtils';
+import { useExternalScanner } from '../src/externalScanner';
 
 export default function Buy() {
   const router = useRouter();
@@ -40,6 +41,10 @@ export default function Buy() {
       Alert.alert('موجود', `${existing.name} - الرصيد الحالي: ${existing.quantity}`);
     } catch {}
   };
+
+  // Support external USB/Bluetooth HID barcode scanners globally on this
+  // screen. Same handler used by camera scanning — no logic duplication.
+  useExternalScanner(handleBarcode, { enabled: !scannerOpen && !busy });
 
   const handleImage = async (base64: string) => {
     setImage(base64);

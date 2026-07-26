@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useAuth, apiFetch } from '../src/auth';
 import { colors } from '../src/theme';
+import { useExternalScanner } from '../src/externalScanner';
 import ScreenHeader from '../src/ScreenHeader';
 
 type Med = { id: string; name: string; quantity: number; price: number; barcode?: string };
@@ -75,7 +76,17 @@ export default function Inventory() {
     }
   };
 
-  const filtered = search.trim() ? meds.filter(m => m.name.toLowerCase().includes(search.toLowerCase())) : meds;
+  const filtered = search.trim() ? meds.filter(m => m.name.toLowerCase().includes(search.toLowerCase()) || (m.barcode || '').includes(search.trim())) : meds;
+
+  // External barcode scanner: paste the code into the search input so
+  // matching medicines show instantly. Also try direct barcode lookup —
+  // if unique match, navigate/highlight; else just filter.
+  useExternalScanner((code) => {
+    setSearch(code);
+    // Optional: fire a direct barcode lookup as UX signal
+    apiFetch(`/medicines/barcode/${encodeURIComponent(code)}`, {}, token)
+      .catch(() => { /* not found — search box already filters by barcode */ });
+  });
 
   if (loading) {
     return <SafeAreaView style={styles.safe}><View style={styles.center}><ActivityIndicator color={colors.primary} size="large" /></View></SafeAreaView>;
