@@ -354,14 +354,27 @@ def install_routes(require_role):
 
         order_id = str(uuid.uuid4())
         order_number = f"PO-{datetime.now(timezone.utc).strftime('%y%m%d')}-{order_id[:6].upper()}"
+
+        # Auto-assign a stable local supplier_id when the paper order is not
+        # linked to a real marketplace supplier. This ensures every paper
+        # order appears under some supplier in the debts UI and can be paid
+        # via the FIFO 'تسديد دين' flow, exactly like marketplace suppliers.
+        effective_supplier_id = data.supplier_id
+        supplier_name_clean = (data.supplier_name or "").strip() or "مذخر غير محدد"
+        if not effective_supplier_id:
+            import hashlib
+            key = supplier_name_clean.lower()
+            h = hashlib.md5(f"{pharmacy_id}|{key}".encode("utf-8")).hexdigest()[:12]
+            effective_supplier_id = f"local:{h}"
+
         order_doc: Dict[str, Any] = {
             "id": order_id,
             "pharmacy_id": pharmacy_id,
             "order_number": order_number,
             "invoice_number": data.invoice_number,
             "invoice_date": _parse_expiry_safe(data.invoice_date) or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            "supplier_id": data.supplier_id,
-            "supplier_name": (data.supplier_name or "").strip() or "مذخر غير محدد",
+            "supplier_id": effective_supplier_id,
+            "supplier_name": supplier_name_clean,
             "image_base64": image_b64,      # archive
             "items": added_items,
             "total": total,
@@ -379,13 +392,13 @@ def install_routes(require_role):
         }
         await _db.paper_orders.insert_one(order_doc.copy())
 
-        # If we have a linked supplier, mirror the remaining balance into
-        # the existing supplier_ledger so the debts UI picks it up.
-        if data.supplier_id and remaining > 0:
+        # Mirror the remaining balance into supplier_ledger so it shows in
+        # the debts UI (works for both real and local:* supplier IDs).
+        if remaining > 0:
             await _db.supplier_ledger.insert_one({
                 "id": str(uuid.uuid4()),
                 "pharmacy_id": pharmacy_id,
-                "supplier_id": data.supplier_id,
+                "supplier_id": effective_supplier_id,
                 "kind": "paper_order_debit",
                 "amount": remaining,
                 "reference_id": order_id,

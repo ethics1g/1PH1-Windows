@@ -1,0 +1,41 @@
+{
+  "summary": "Iteration_23 (RESTORE FIFO supplier debt + extend for paper-only suppliers) fully verified. Backend: 11/11 new paper-only supplier FIFO tests + 15/15 restored FIFO debt payment tests + 45/45 paper_orders & returns_flow regression tests = 71/71 PASS. Frontend (mobile viewport 390x844): after login as 07700000001/pass123 and navigating to /accounting/supplier-accounts, the list correctly shows 6 suppliers including 5 local:* paper-only suppliers alongside the marketplace supplier 'مذخر النور'. Tapping into a local:* row (sa-local:a5a324264498, 'مذخر بدون حساب') renders the full 'تسديد دين' UI with subtitle 'مذخر من طلبية مصورة', 4 balance cards, FIFO hint, expandable unpaid invoices list (8 invoices shown), amount input, 'سداد كامل' shortcut, notes field, pay button, payment history section, and 'الطلبيات المصورة (8)' section with paid/partial badges — identical to the marketplace supplier flow. All key testIDs (btn-toggle-invoices, pay-amount, btn-full-amount, pay-notes, btn-pay-supplier, sa-{supplier_id}) are present and functional. Backfill of legacy paper orders (5 pre-existing without supplier_id) into local:* IDs confirmed via GET /supplier-accounts. The 7 failures in test_revert_and_paper_orders_tab.py are EXPECTED (those tests were written to prove the FIFO endpoints were removed in iter22; now that iter23 RESTORED them at user's explicit request, those inverted-assertion tests must fail — this is not a regression).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_supplier_fifo_paper_only.py",
+    "/app/backend/tests/test_fifo_debt_payment.py",
+    "/app/test_reports/pytest/pytest_iter23_paper_only.xml",
+    "/app/test_reports/pytest/pytest_iter23_fifo_debt.xml"
+  ],
+  "action_items": [
+    "Optional: delete or rewrite /app/backend/tests/test_revert_and_paper_orders_tab.py — it was iteration_22 revert-verification and now correctly fails because iter23 restored the endpoints it asserted were removed. Its assertions on 'no invoices_paid_total', 'no /pay endpoint', 'orders have no enrichment' are all now false-by-design. Keep only if the intent shifts; otherwise remove to avoid CI noise."
+  ],
+  "critical_code_review_comments": [
+    "accounting.py L152-181: _pharmacy_supplier_debit + _paper_orders_debit both return {debit, paid} dicts — clean parallelism. Aggregation is safe with $ifNull fallbacks for legacy docs missing 'total' or 'paid_amount'.",
+    "accounting.py L184-216: _read_supplier_account correctly composes marketplace + paper debits, subtracts invoices_paid_total AND credit_applied — max(0, …) prevents negatives. Auto-inserts stub supplier_accounts doc so subsequent updates never race.",
+    "accounting.py L707-806: /accounting/supplier-accounts lazy backfill runs O(N) once per list call — safe because updates are idempotent (both paper_orders.$set supplier_id and supplier_ledger insert are guarded by 'not existing'). Backfilled ledger notes tagged '(backfill)'.",
+    "accounting.py L920-1043: /pay endpoint properly sorts invoices by created_at ASC (line 953), rejects overpay with Arabic error (line 956-957), branches marketplace vs paper writes, records master ledger entry with allocations[] array + fully_paid counts + recorded_by. Payment_master_id used consistently for cross-referencing sub-payments on paper orders.",
+    "paper_orders.py L358-368: local:* id generation is deterministic (md5(pharmacy_id|supplier_name.lower())[:12]) — same supplier_name from same pharmacy always maps to the same local sid, guaranteeing multi-invoice grouping. Good.",
+    "paper_orders.py L397-409: supplier_ledger paper_order_debit entry now inserted regardless of local vs real supplier — fixes the pre-iter23 gap where local orders were invisible in the ledger UI.",
+    "[supplierId].tsx: handles both is_local (subtitle 'مذخر من طلبية مصورة') and marketplace suppliers with the same JSX branch. All key testIDs present.",
+    "Backend response shapes have no MongoDB _id leaks — verified in regression test test_supplier_accounts_list_shape."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_supplier_fifo_paper_only.py (NEW)"
+  ],
+  "success_rate": {
+    "backend": "100% (71/71 relevant tests: 11 new paper-only + 15 restored FIFO + 45 regression). test_revert_and_paper_orders_tab.py 7/14 fails are EXPECTED — those specifically verified endpoints that are now intentionally restored.",
+    "frontend": "100% (login + navigation + supplier list with paper-only suppliers visible + detail with full FIFO UI + is_local subtitle + expandable invoices verified on 390x844)"
+  },
+  "seed_data_creation": "Created 1 paper order via POST /orders/paper without supplier_id (name 'TEST_مذخر تجريبي paper-only <ts>', total=100, amount_paid=30) which auto-received a local:<md5> supplier_id, then executed partial 25 and final 45 payments through /accounting/supplier-accounts/{local_sid}/pay to prove full FIFO settlement flow. Also created a second TEST_regression_paper order to verify the individual /orders/paper/{id}/pay legacy endpoint still works.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration_23 restored the supplier FIFO 'تسديد دين' system AND extended it to paper-only suppliers via 'local:*' virtual IDs. Key new test file: /app/backend/tests/test_supplier_fifo_paper_only.py — reuse for regression. Note: /app/backend/tests/test_revert_and_paper_orders_tab.py is now OBSOLETE (its TestSupplierReverted class was designed to lock in the iter22 revert and now correctly fails since iter23 intentionally restored those endpoints); either delete it or drop that class. All other tests (test_fifo_debt_payment.py, test_paper_orders.py, test_returns_flow.py) continue to pass. The frontend supplier detail screen [supplierId].tsx handles both is_local (paper-only) and real marketplace suppliers with the same 'تسديد دين' UI — testIDs: sa-{supplier_id}, btn-toggle-invoices, inv-{idx}, pay-amount, btn-full-amount, pay-notes, btn-pay-supplier, pay-hist-{id}.",
+  "rca_of_issue": "N/A — this iteration is a feature restore + extend, not a bug fix. All acceptance criteria in the review request (paper-only supplier appears, FIFO pay works, backfill works, marketplace supplier still works, customer FIFO still works, regressions clean) are verified passing."
+}

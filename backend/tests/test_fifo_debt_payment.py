@@ -233,18 +233,35 @@ class TestCustomerFIFOPayment:
 # ============================ SUPPLIERS ==============================
 # =====================================================================
 
-# NOTE (iteration 22): Supplier FIFO debt payment endpoints were REMOVED
-# per the user's explicit request ("لا تقم بأي تعديل على نظام ديون المذاخر").
-# The tests below are kept as SKIPPED historical stubs to document the
-# removed behavior — do NOT re-enable without user confirmation.
-
-
-@pytest.mark.skip(reason="Supplier FIFO payment endpoints removed by user request (iter 22)")
 class TestSupplierFIFOPayment:
 
-    def test_supplier_endpoints_removed(self, h):
-        """Placeholder — original tests removed with endpoints."""
-        pass
+    def test_01_get_supplier_accounts_overview(self, h, supplier_state):
+        """Find a supplier with outstanding balance to test against."""
+        r = requests.get(f"{API}/accounting/supplier-accounts", headers=h, timeout=15)
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert "items" in j
+        candidates = [s for s in j["items"] if s.get("outstanding_balance", 0) > 0]
+        if not candidates:
+            candidates = j["items"]
+        if not candidates:
+            pytest.skip("No supplier accounts found — cannot test supplier FIFO pay")
+        chosen = candidates[0]
+        supplier_state["sid"] = chosen["supplier_id"]
+        supplier_state["initial_outstanding"] = chosen["outstanding_balance"]
+        supplier_state["supplier_name"] = chosen.get("supplier_name")
+
+    def test_02_unpaid_invoices_endpoint_fifo_sorted(self, h, supplier_state):
+        sid = supplier_state["sid"]
+        r = requests.get(f"{API}/accounting/supplier-accounts/{sid}/unpaid-invoices",
+                         headers=h, timeout=15)
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert "invoices" in j and "count" in j and "total_outstanding" in j
+        dates = [inv["created_at"] for inv in j["invoices"] if inv.get("created_at")]
+        assert dates == sorted(dates), f"Not FIFO sorted: {dates}"
+        supplier_state["unpaid_invoices"] = j["invoices"]
+        supplier_state["total_available"] = j["total_outstanding"]
 
 
 # =====================================================================
