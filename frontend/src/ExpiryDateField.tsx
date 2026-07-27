@@ -81,6 +81,7 @@ export default function ExpiryDateField({
           <Ionicons name="calendar-outline" size={22} color={colors.primary} />
         </TouchableOpacity>
         <TextInput
+          ref={guard.inputRef as any}
           testID={testID || 'expiry-input'}
           style={[styles.input, error ? styles.inputError : null]}
           value={value}

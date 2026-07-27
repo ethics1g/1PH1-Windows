@@ -60,6 +60,7 @@ export default function MedicineAutocomplete({ onSelect, placeholder, autoFocus,
       <View style={styles.inputWrap}>
         <Ionicons name="search" size={18} color={colors.textMuted} style={{ marginHorizontal: 8 }} />
         <TextInput
+          ref={guard.inputRef as any}
           testID={testID || 'ac-input'}
           style={styles.input}
           value={q}

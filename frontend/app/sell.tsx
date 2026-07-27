@@ -61,11 +61,11 @@ export default function Sell() {
   // fields) uses `useHidGuardedChange` which reverts scanner-speed digit
   // bursts and streams them to the HID buffer. The listener below is
   // called with the completed barcode and adds the medicine to the cart.
-  useHidGuardListener(handleBarcode, !scannerOpen && !busy && !creditModalOpen);
-  // Legacy web-only interception (kept for browser preview parity)
-  useExternalScanner(handleBarcode, {
-    enabled: !scannerOpen && !busy && !creditModalOpen,
-  });
+  useHidGuardListener(handleBarcode, !scannerOpen && !busy);
+  // Web-level doc.keydown listener — kept ON even when credit modal is
+  // open so the modal's TextInputs are shielded on web too. Modal inputs
+  // are ALSO protected natively via `useHidGuardedChange`.
+  useExternalScanner(handleBarcode, { enabled: !scannerOpen && !busy });
 
   // Guarded change handlers for each modal / autocomplete input.
   const custNameGuard = useHidGuardedChange(customerName, setCustomerName);
@@ -244,16 +244,16 @@ export default function Sell() {
             </View>
             <ScrollView contentContainerStyle={{ padding: 14 }} keyboardShouldPersistTaps="handled">
               <Text style={styles.lbl}>اسم الزبون *</Text>
-              <TextInput testID="cust-name" style={styles.mInput} value={customerName} onChangeText={custNameGuard.onChangeText} onKeyPress={custNameGuard.onKeyPress} placeholder="مثال: أحمد محمد" placeholderTextColor={colors.textMuted} textAlign="right" blurOnSubmit={false} />
+              <TextInput ref={custNameGuard.inputRef as any} testID="cust-name" style={styles.mInput} value={customerName} onChangeText={custNameGuard.onChangeText} onKeyPress={custNameGuard.onKeyPress} placeholder="مثال: أحمد محمد" placeholderTextColor={colors.textMuted} textAlign="right" blurOnSubmit={false} />
 
               <Text style={styles.lbl}>رقم الهاتف (اختياري)</Text>
-              <TextInput testID="cust-phone" style={styles.mInput} value={customerPhone} onChangeText={custPhoneGuard.onChangeText} onKeyPress={custPhoneGuard.onKeyPress} placeholder="07XX-XXX-XXXX" placeholderTextColor={colors.textMuted} textAlign="right" keyboardType="phone-pad" maxLength={20} blurOnSubmit={false} />
+              <TextInput ref={custPhoneGuard.inputRef as any} testID="cust-phone" style={styles.mInput} value={customerPhone} onChangeText={custPhoneGuard.onChangeText} onKeyPress={custPhoneGuard.onKeyPress} placeholder="07XX-XXX-XXXX" placeholderTextColor={colors.textMuted} textAlign="right" keyboardType="phone-pad" maxLength={20} blurOnSubmit={false} />
 
               <Text style={styles.lbl}>ملاحظات (اختياري)</Text>
-              <TextInput testID="cust-notes" style={[styles.mInput, { height: 60, textAlignVertical: 'top' }]} value={customerNotes} onChangeText={custNotesGuard.onChangeText} onKeyPress={custNotesGuard.onKeyPress} multiline placeholder="أي معلومات إضافية عن الزبون..." placeholderTextColor={colors.textMuted} textAlign="right" />
+              <TextInput ref={custNotesGuard.inputRef as any} testID="cust-notes" style={[styles.mInput, { height: 60, textAlignVertical: 'top' }]} value={customerNotes} onChangeText={custNotesGuard.onChangeText} onKeyPress={custNotesGuard.onKeyPress} multiline placeholder="أي معلومات إضافية عن الزبون..." placeholderTextColor={colors.textMuted} textAlign="right" />
 
               <Text style={styles.lbl}>دفعة أولية (اختياري)</Text>
-              <TextInput testID="cust-paid" style={styles.mInput} value={amountPaid} onChangeText={custPaidGuard.onChangeText} onKeyPress={custPaidGuard.onKeyPress} placeholder={`0 (المتبقي ${total.toLocaleString()} د.ع سيُسجَّل كدين)`} placeholderTextColor={colors.textMuted} textAlign="right" keyboardType="decimal-pad" blurOnSubmit={false} />
+              <TextInput ref={custPaidGuard.inputRef as any} testID="cust-paid" style={styles.mInput} value={amountPaid} onChangeText={custPaidGuard.onChangeText} onKeyPress={custPaidGuard.onKeyPress} placeholder={`0 (المتبقي ${total.toLocaleString()} د.ع سيُسجَّل كدين)`} placeholderTextColor={colors.textMuted} textAlign="right" keyboardType="decimal-pad" blurOnSubmit={false} />
 
               <TouchableOpacity testID="btn-confirm-credit" style={styles.confirmBtn} onPress={checkout} disabled={busy || !customerName.trim()}>
                 {busy ? <ActivityIndicator color="#fff" /> : (

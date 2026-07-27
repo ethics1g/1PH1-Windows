@@ -1,0 +1,24 @@
+{
+  "summary": "Iteration 27 HID guard fix VERIFIED. All 14 scenarios from review request PASS on web preview at 390x844 mobile viewport, pharmacy 07700000001/pass123. First-digit leak on Sell credit-modal cust-phone is FIXED (returns '' after fresh 87654321+Enter burst at 5ms/key, and the backend receives the full 8-digit barcode /api/medicines/barcode/87654321). All Buy fields (name/barcode/qty/purchase/price/expiry) and Sell fields (autocomplete, cust-name, cust-phone, cust-notes, cust-paid) remain empty on fresh burst. Focus correctly returns to buy-barcode after a burst on buy-name. Delayed-commit HOLD_MS=45ms window correctly identifies slow human keys as non-burst: single slow '5' at 300ms delay is retained on every field (buy-quantity, buy-purchase-price, buy-price, buy-expiry, cust-phone, cust-paid) and Arabic 'أدوية'/'أحمد' typed at 250ms/char is fully retained. Full Buy form fill by slow typing + submit succeeds: POST /api/medicines/buy-v2 returns 200. Rules of Hooks conditional call in buy.tsx Field FIXED: useHidGuardedChange is always called; zero hook warnings in console during renders. Only console output is unrelated shadow*/expo-notifications deprecation warnings.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_27.json (inline browser_automation script)"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Minor testID inconsistency: ExpiryDateField renders TextInput with testID=`${testID || 'expiry-input'}`. When caller passes testID='buy-expiry', the input gets testID='buy-expiry' (not 'buy-expiry-input' as documented in the review request). Consider standardising by always appending '-input' or documenting the actual testID.",
+    "hidGuard.ts HOLD_MS=45ms is well-tuned for HID scanners (typically <10ms/key) but could still let through a two-key human 'burst' if the user rests two fingers ready-to-tap (rare). Consider adding a minimum digit-count of 2 within the window to reduce false positives if user reports issues.",
+    "handlers module-level Set + refocusFn singleton in hidGuard.ts means only ONE screen can register a refocus at a time. Fine for current Sell/Buy but worth noting if multi-screen scanner support is added."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped per request)", "frontend": "14/14 (100%)"},
+  "seed_data_creation": "None. Used existing pharmacy 07700000001 with Ibuprofen 200 in stock for autocomplete/cart flow. One test medicine created via successful buy-v2 submission at end of test run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All burst-leak scenarios pass on web. Note: hidGuard.ts is now fully self-contained (no dependency on the web document-level externalScanner interceptor) — so the same guarantees should hold on Android/iOS native, which was the original user-reported platform. If future iterations touch hidGuard.ts, retest by: (1) login pharmacy 07700000001/pass123, (2) go to /buy, focus any non-barcode field, keyboard.type('87654321', delay=5)+Enter, verify input_value is '' and REQ /api/medicines/barcode/87654321 fires with full 8 digits; (3) same on /sell after adding an item to cart (search 'Ibu', click ac-hit-*, click pay-credit) then burst on cust-phone/name/notes/paid. Human-regression: keyboard.type('5', delay=300) on same fields → value must equal '5'.",
+  "rca_of_issue": "Fix confirmed working. Root cause of iteration 26 leak was that hidGuard.useHidGuardedChange's burst predicate required prior timing evidence (dt<60ms) OR non-empty hidBuffer — so the very first key of a fresh burst always committed to state before subsequent fast keys established the pattern. Iteration 27 fix: on any fresh single-digit input the value is HELD in a ref for HOLD_MS=45ms (never committed to React state); if a second digit arrives inside that window, burst is confirmed → both digits streamed to hidBuffer + native input reverted via setNativeProps({text: prev}); if timer expires with only one digit, it was human input → commits normally. Delayed-commit approach removes the platform dependency on the web-only doc-level externalScanner interceptor, so Android/iOS native should now behave the same as web. Verified via full-page 8-digit bursts on 10 different input fields (5 Buy, 4 Sell modal, 1 Sell autocomplete) — all empty; verified 3 human-typing scenarios per field — all characters retained."
+}

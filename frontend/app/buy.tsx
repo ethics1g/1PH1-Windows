@@ -211,33 +211,28 @@ export default function Buy() {
   );
 }
 
-function Field({ label, value, onChange, testID, keyboardType, isBarcode, inputRef }: { label: string; value: string; onChange: (v: string) => void; testID: string; keyboardType?: 'default' | 'numeric'; isBarcode?: boolean; inputRef?: React.RefObject<TextInput | null> }) {
-  // Marking the barcode input with a data attribute + testID lets the
-  // external HID scanner listener recognise it, redirect scanner bursts
-  // into it (never into price/quantity/name), and refocus it after each
-  // scan for continuous scanning.
+function Field({ label, value, onChange, testID, keyboardType, isBarcode, inputRef: externalRef }: { label: string; value: string; onChange: (v: string) => void; testID: string; keyboardType?: 'default' | 'numeric'; isBarcode?: boolean; inputRef?: React.RefObject<TextInput | null> }) {
+  // Barcode field marker (web only) — the browser-level document.keydown
+  // listener uses it to identify the target of scanner input.
   const webA11yProps = Platform.OS === 'web' && isBarcode
     ? ({ dataSet: { barcodeInput: '1' } } as any)
     : {};
 
-  // Non-barcode fields get the HID guard: if scanner-speed digits arrive
-  // while this field has focus, the guard reverts the change and streams
-  // the digits into the shared HID buffer instead — so no leak into
-  // price/quantity/name on Android/iOS.
-  //
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const guarded = isBarcode ? null : useHidGuardedChange(value, onChange);
+  // ALWAYS call the hook (Rules of Hooks). Its handlers are only wired to
+  // the field when it's NOT the barcode target — barcode field commits
+  // directly since scanner output belongs there.
+  const guard = useHidGuardedChange(value, onChange);
 
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
       <TextInput
-        ref={inputRef as any}
+        ref={(isBarcode ? externalRef : guard.inputRef) as any}
         testID={testID}
         style={styles.input}
         value={value}
-        onChangeText={guarded ? guarded.onChangeText : onChange}
-        onKeyPress={guarded ? guarded.onKeyPress : undefined}
+        onChangeText={isBarcode ? onChange : guard.onChangeText}
+        onKeyPress={isBarcode ? undefined : guard.onKeyPress}
         keyboardType={keyboardType || 'default'}
         textAlign="right"
         autoCapitalize="none"
