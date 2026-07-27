@@ -9,7 +9,7 @@ import { colors } from '../src/theme';
 import ScreenHeader from '../src/ScreenHeader';
 import MedicineScanner from '../src/MedicineScanner';
 import MedicineAutocomplete from '../src/MedicineAutocomplete';
-import { useExternalScanner } from '../src/externalScanner';
+import BarcodeCaptureBar from '../src/BarcodeCaptureBar';
 
 type CartItem = { medicine_id: string; name: string; price: number; quantity: number; stock: number };
 
@@ -53,10 +53,6 @@ export default function Sell() {
       setBusy(false);
     }
   };
-
-  // Listen for external (USB/Bluetooth HID) barcode scanners.
-  // Enabled whenever the modal scanner is NOT open (to avoid double reads).
-  useExternalScanner(handleBarcode, { enabled: !scannerOpen && !busy });
 
   const handleImage = async (base64: string) => {
     setBusy(true);
@@ -140,11 +136,26 @@ export default function Sell() {
       >
         {busy ? <ActivityIndicator color="#fff" /> : (
           <>
-            <Ionicons name="scan" size={26} color="#fff" />
-            <Text style={styles.scanBtnTxt}>مسح الدواء بالباركود أو الصورة</Text>
+            <Ionicons name="camera" size={26} color="#fff" />
+            <Text style={styles.scanBtnTxt}>التعرف على الدواء بالصورة (كاميرا)</Text>
           </>
         )}
       </TouchableOpacity>
+
+      {/* Unified barcode input — supports BOTH camera and USB/Bluetooth HID
+          scanners in the same field. Barcode data is always captured here,
+          never in other fields. */}
+      <View style={{ paddingHorizontal: 14, marginBottom: 8 }}>
+        <BarcodeCaptureBar
+          testID="sell-barcode"
+          label="الباركود"
+          placeholder="امسح بقارئ الباركود أو استخدم الكاميرا"
+          onScan={handleBarcode}
+          onOpenCamera={() => setScannerOpen(true)}
+          disabled={busy}
+          autoFocusEnabled={!scannerOpen && !busy && !creditModalOpen}
+        />
+      </View>
 
       {/* Manual name search — 3rd input method */}
       <View style={{ paddingHorizontal: 14, marginBottom: 8, zIndex: 5 }}>

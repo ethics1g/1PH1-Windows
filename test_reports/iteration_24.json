@@ -1,0 +1,30 @@
+{
+  "summary": "Frontend-only testing for BarcodeCaptureBar (unified camera + HID scanner input) on Buy and Sell screens. Found ONE CRITICAL bug: the first character of a scanner burst leaks into whichever field is currently focused (name/autocomplete), violating the hard user requirement 'HID scanner input MUST land in the barcode field ONLY'. Chars 2..N are correctly redirected and Enter is consumed correctly. Camera icon works, layout is correct, slow human typing is not misclassified as a burst, and the sell/buy flows integrate properly with /api/medicines/barcode/{code}.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "BarcodeCaptureBar", "issue": "FIRST-CHAR LEAK: When a non-barcode input (buy-name / sell-autocomplete / etc.) is focused and an HID scanner burst arrives, the very first character of the burst is typed into the focused field. Only chars 2..N are correctly redirected to the barcode field. Reproduced twice: burst '77776666' on buy-name → name='7'; burst '13579246' on sell-autocomplete → autocomplete='1'. This violates the user's hard requirement that scanner input MUST NEVER land in another field.", "testID": "buy-barcode / sell-barcode", "priority": "CRITICAL"}
+    ],
+    "integration_issues": [
+      {"flow": "Sell page barcode lookup", "issue": "After scanner burst on sell page, sell-barcode field is cleared (post-submit) and the /api/medicines/barcode/{code} 404 was seen in console (expected because '13579246' is a fake code). Real integration path works; the leak of char '1' into autocomplete additionally caused the autocomplete dropdown to open showing suggestions filtered by '1'.", "affected_testIDs": ["sell-barcode", "sell-autocomplete"]}
+    ],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/tmp/04_buy.png", "/tmp/05_after_burst.png", "/tmp/07_camera_modal.png", "/tmp/08_sell.png", "/tmp/09_sell_after_burst.png"],
+  "action_items": [
+    "Fix first-char leak in /app/frontend/src/BarcodeCaptureBar.tsx onKeyDown handler. Current logic requires dt < BURST_MS to redirect, but the FIRST char of a burst always has dt=Infinity (idle) so it is not captured. Suggested fixes: (a) When a non-barcode editable input is focused, buffer keystrokes in the capture handler for a short window (~25-40ms) BEFORE letting them pass through; if a 2nd char arrives inside that window, treat the whole buffer as a burst and swallow the first char too (call preventDefault at capture on char #1 by default and only 'commit' it back into the focused field via a setTimeout if no burst follows). (b) Alternatively, when a non-barcode input is focused, ALWAYS preventDefault at capture for keystrokes that are barcode-valid chars (digits + alphanumerics) and stage them in a 30ms buffer; on timeout with a single char, either drop it or programmatically insert into the focused field. (c) Simpler heuristic: when the focused element is not our barcode input, always redirect ALL digit keystrokes to the barcode field regardless of dt — the user explicitly wants zero leakage, and humans rarely need to type raw digits into name/autocomplete anyway (numeric fields for price/qty are legitimate cases though). Choose the approach that best balances UX for numeric input fields (price, quantity).",
+    "Verify the fix by focusing buy-name / sell-autocomplete, waiting 2s idle, then bursting 8 digits + Enter — the focused field must remain EMPTY and the barcode must be captured and processed."
+  ],
+  "critical_code_review_comments": [
+    "BarcodeCaptureBar.tsx line ~150-196: burst detection depends on lastKeyAtRef which starts at 0 and is not seeded, so the first keystroke of any burst always has dt=Infinity and is not classified as a burst. The redirect branch (looksLikeBurst && !onOurField && onEditable) can never trigger for the FIRST char.",
+    "BarcodeCaptureBar.tsx: autoFocusEnabled reset logic looks correct (paused when scannerOpen / creditModalOpen) — no issues observed."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only)", "frontend": "~85% - core layout, camera icon, slow-typing-passthrough, Enter-consumption, subsequent-char redirection, and API integration all work. Only the first-char-of-burst is leaking."},
+  "seed_data_creation": "None. Reused pharmacy 07700000001/pass123.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Reproduce leak by: login as 07700000001/pass123 → /buy → click into buy-name (or /sell → click autocomplete) → wait ~2 seconds idle → send 8 digits via page.keyboard.press with 8-10ms sleep between + Enter → inspect the focused field's value; if it contains 1 char, the bug is still present. Passing criterion: focused field's value stays empty.",
+  "rca_of_issue": "The document-level keydown listener detects scanner bursts via inter-keystroke timing (dt = now - lastKeyAt < 60ms). Because lastKeyAtRef.current is initialized to 0 and is only updated after each keystroke, the FIRST character of any burst has dt >>> 60ms and therefore falls through to the default behavior — typing into the currently focused input. Only chars 2..N (which arrive fast after char 1) satisfy the burst condition and are correctly redirected + preventDefault'd. Reproduction: burst '77776666' with name focused → name='7'. Mitigation options listed in action_items."
+}

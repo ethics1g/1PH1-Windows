@@ -10,9 +10,9 @@ import { useAuth, apiFetch } from '../src/auth';
 import { colors } from '../src/theme';
 import ScreenHeader from '../src/ScreenHeader';
 import MedicineScanner from '../src/MedicineScanner';
+import BarcodeCaptureBar from '../src/BarcodeCaptureBar';
 import ExpiryDateField from '../src/ExpiryDateField';
 import { normalizeExpiryDate } from '../src/utils/dateUtils';
-import { useExternalScanner } from '../src/externalScanner';
 
 export default function Buy() {
   const router = useRouter();
@@ -41,10 +41,6 @@ export default function Buy() {
       Alert.alert('موجود', `${existing.name} - الرصيد الحالي: ${existing.quantity}`);
     } catch {}
   };
-
-  // Support external USB/Bluetooth HID barcode scanners globally on this
-  // screen. Same handler used by camera scanning — no logic duplication.
-  useExternalScanner(handleBarcode, { enabled: !scannerOpen && !busy });
 
   const handleImage = async (base64: string) => {
     setImage(base64);
@@ -144,12 +140,26 @@ export default function Buy() {
             onPress={() => setScannerOpen(true)}
             disabled={busy}
           >
-            <Ionicons name="scan" size={22} color="#fff" />
-            <Text style={styles.scanBtnTxt}>مسح الباركود / صورة الدواء</Text>
+            <Ionicons name="camera" size={22} color="#fff" />
+            <Text style={styles.scanBtnTxt}>التعرف على الدواء بالصورة (كاميرا)</Text>
           </TouchableOpacity>
 
+          {/* Unified barcode input — works with BOTH camera and USB/Bluetooth
+              HID scanners. Any barcode data from a scanner is routed here
+              only, never into other fields. */}
+          <BarcodeCaptureBar
+            testID="buy-barcode"
+            label="الباركود"
+            placeholder="امسح بقارئ الباركود أو من الكاميرا"
+            value={barcode}
+            onChangeText={setBarcode}
+            onScan={handleBarcode}
+            onOpenCamera={() => setScannerOpen(true)}
+            disabled={busy}
+            autoFocusEnabled={!scannerOpen && !busy}
+          />
+
           <Field label="اسم الدواء" value={name} onChange={setName} testID="buy-name" />
-          <Field label="الباركود (اختياري)" value={barcode} onChange={setBarcode} testID="buy-barcode" />
 
           <View style={styles.row}>
             <View style={{ flex: 1 }}>
