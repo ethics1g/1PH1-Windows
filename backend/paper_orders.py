@@ -60,23 +60,45 @@ def _parse_expiry_safe(v: Optional[str]) -> Optional[str]:
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
-EXTRACTION_PROMPT = """أنت مساعد متخصص في استخراج بيانات فواتير الأدوية من صور الطلبيات المكتوبة يدوياً أو المطبوعة.
-حلل صورة الفاتورة/الوصل واستخرج كل صف من صفوف الأدوية.
+# ---------- OCR prompts (two passes: strict + lenient fallback) ---------
 
-أرجع JSON فقط (ابدأ بـ [ وانتهِ بـ ]) — لا تُضِف أي شرح أو Markdown.
+EXTRACTION_PROMPT = """أنت مساعد خبير في قراءة فواتير الأدوية الصيدلانية (مطبوعة أو خط يد، عربية أو إنجليزية أو مختلطة).
+مهمتك: استخراج كل الأصناف الظاهرة في الصورة، حتى لو كانت الصورة مضغوطة أو الخط صغيراً.
 
-لكل صنف أرجع كائناً بالحقول التالية:
-- name: اسم الدواء كاملاً كما يظهر (مطلوب)
-- quantity: الكمية كرقم صحيح (استخدم 0 إذا غير واضح)
-- price: سعر شراء الوحدة كرقم عشري (استخدم 0 إذا غير واضح)
-- batch_number: رقم التشغيلة إذا ظهر، وإلا null
-- expiry_date: تاريخ الانتهاء بصيغة YYYY-MM أو YYYY-MM-DD، وإلا null
+قواعد قراءة صارمة:
+1. اقرأ كل صف بعناية. الأدوية غالباً في جدول من 4-6 أعمدة: (اسم الدواء، الشركة، الكمية، السعر، الإجمالي، أحياناً التشغيلة والصلاحية).
+2. **لا ترفض** لأن الجودة منخفضة أو الخط صغير — خمّن أفضل قراءة ممكنة واستمر.
+3. أعد الأسماء **بالضبط كما ظهرت** (عربية أو إنجليزية أو مختلطة). لا تُترجم.
+4. **إذا كنت غير متأكد من رقم**: ضع 0 وواصل — لا تحذف الصف.
+5. تجاهل الرؤوس والتذييلات (شعار، تاريخ، توقيع، هاتف، إجمالي عام في الأسفل).
+6. إذا تكرر نفس الاسم بأرقام تشغيلة مختلفة، أعد صفاً منفصلاً لكل تشغيلة.
 
-قواعد:
-- تجاهل الرؤوس والتذييلات والأسطر التي ليست منتجات (شعار، تاريخ، توقيع، أرقام هواتف).
-- إذا تكرر الصنف بأكثر من رقم تشغيلة، أعد صفاً منفصلاً لكل تشغيلة.
-- لا تخمّن قيماً غير ظاهرة.
-- أعد الأسماء بالعربية كما ظهرت في الصورة.
+أرجع مصفوفة JSON فقط. ابدأ بـ [ وانتهِ بـ ]. لا شرح ولا Markdown.
+
+لكل صف:
+{
+  "name": "اسم الدواء كاملاً كما ظهر (مطلوب — لا تتركه فارغاً)",
+  "quantity": رقم صحيح (0 إذا غير واضح),
+  "price": رقم عشري لسعر الوحدة (0 إذا غير واضح),
+  "batch_number": "رقم التشغيلة" أو null,
+  "expiry_date": "YYYY-MM" أو "YYYY-MM-DD" أو null
+}
+
+مثال على المخرجات المتوقعة (لا تنسخ القيم — استخدم الصورة):
+[{"name":"Paracetamol 500mg","quantity":30,"price":250,"batch_number":"L2401","expiry_date":"2026-08"},
+ {"name":"Amoxicillin 250mg","quantity":10,"price":1500,"batch_number":null,"expiry_date":null}]
+"""
+
+LENIENT_RETRY_PROMPT = """المحاولة الأولى فشلت. الصورة تحتوي على قائمة أدوية بالتأكيد.
+انظر بعناية أكبر — قد تكون الخطوط صغيرة أو مائلة أو بخط اليد. لا تعيدها فارغة.
+
+اقرأ كل سطر واحدة واحدة من أعلى الجدول إلى أسفله واستخرج أي شيء يشبه اسم دواء + رقم كمية + رقم سعر.
+حتى لو استطعت قراءة الاسم فقط (بلا كمية أو سعر) → أعد الصف مع quantity=0 و price=0.
+
+**ممنوع** إعادة مصفوفة فارغة إن كانت الصورة تحتوي على أي نص جدولي. حاول قراءة كل صف بأفضل تخمين لديك.
+
+أرجع فقط: [{"name":"...","quantity":N,"price":N,"batch_number":null,"expiry_date":null}, ...]
+لا شرح، ابدأ بـ [ وانتهِ بـ ].
 """
 
 METADATA_PROMPT = """من نفس الصورة استخرج بيانات رأس الفاتورة/الطلبية إن وجدت:
@@ -88,87 +110,120 @@ METADATA_PROMPT = """من نفس الصورة استخرج بيانات رأس �
 أرجع كائن JSON واحد فقط."""
 
 
-async def _gemini_extract_items(image_b64: str) -> List[Dict[str, Any]]:
-    """Call Gemini 3 Flash on the invoice image and return parsed line items."""
+async def _call_gemini_json(image_b64: str, prompt: str, session_prefix: str, model: str = "gemini-3-flash-preview") -> str:
+    """Low-level Gemini call — returns raw response text or empty on error.
+    Errors are logged with FULL detail so silent failures never mask a real
+    issue behind a generic 'الصورة غير واضحة' message to the user."""
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
-
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
-            session_id=f"paperorder-items-{uuid.uuid4()}",
-            system_message="أنت مساعد متخصص في استخراج بنود فواتير الأدوية.",
-        ).with_model("gemini", "gemini-3-flash-preview")
-        msg = UserMessage(text=EXTRACTION_PROMPT,
-                          file_contents=[ImageContent(image_base64=image_b64)])
+            session_id=f"{session_prefix}-{uuid.uuid4()}",
+            system_message="أنت مساعد خبير في قراءة فواتير الأدوية بدقة عالية.",
+        ).with_model("gemini", model)
+        msg = UserMessage(text=prompt, file_contents=[ImageContent(image_base64=image_b64)])
         resp = await chat.send_message(msg)
         text = (resp or "").strip()
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-        s = text.find("[")
-        e = text.rfind("]")
-        if s == -1 or e == -1:
-            return []
-        arr = json.loads(text[s: e + 1])
-        if not isinstance(arr, list):
-            return []
-        cleaned: List[Dict[str, Any]] = []
-        for it in arr:
-            if not isinstance(it, dict):
-                continue
-            name = (it.get("name") or "").strip()
-            if not name:
-                continue
-            def _fnum(x):
-                try: return float(x or 0)
-                except: return 0.0
-            def _inum(x):
-                try: return int(float(x or 0))
-                except: return 0
-            cleaned.append({
-                "name": name,
-                "quantity": _inum(it.get("quantity")),
-                "purchase_price": _fnum(it.get("price")),
-                "batch_number": (it.get("batch_number") or None) or None,
-                "expiry_date": _parse_expiry_safe(it.get("expiry_date")),
-            })
-        return cleaned
-    except Exception:
-        logger.exception("paper-order item extraction failed")
+        # Log a preview for diagnostics without dumping the full base64
+        logger.info("paper-order OCR (%s / %s) raw response preview: %s",
+                    session_prefix, model, (text[:200] + '...') if len(text) > 200 else text)
+        return text
+    except Exception as ex:
+        logger.exception("paper-order OCR failed (%s / %s): %s", session_prefix, model, ex)
+        return ""
+
+
+def _parse_items_json(text: str) -> List[Dict[str, Any]]:
+    """Robust JSON-array extraction from a Gemini response."""
+    if not text:
         return []
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    s = text.find("[")
+    e = text.rfind("]")
+    if s == -1 or e == -1:
+        return []
+    try:
+        arr = json.loads(text[s: e + 1])
+    except json.JSONDecodeError:
+        # Try to recover by fixing trailing commas or single quotes
+        cleaned = re.sub(r",\s*([\]\}])", r"\1", text[s: e + 1])
+        try:
+            arr = json.loads(cleaned)
+        except Exception:
+            return []
+    if not isinstance(arr, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for it in arr:
+        if not isinstance(it, dict):
+            continue
+        name = (it.get("name") or "").strip()
+        if not name:
+            continue
+        def _fnum(x):
+            try: return float(x or 0)
+            except Exception: return 0.0
+        def _inum(x):
+            try: return int(float(x or 0))
+            except Exception: return 0
+        out.append({
+            "name": name,
+            "quantity": _inum(it.get("quantity")),
+            "purchase_price": _fnum(it.get("price")),
+            "batch_number": (it.get("batch_number") or None) or None,
+            "expiry_date": _parse_expiry_safe(it.get("expiry_date")),
+        })
+    return out
+
+
+async def _gemini_extract_items(image_b64: str) -> List[Dict[str, Any]]:
+    """Call Gemini 3 Flash on the invoice image and return parsed line items.
+    Two-pass strategy: strict extraction, then a lenient retry if empty. This
+    saved several real Iraqi handwritten invoices that Gemini refused on the
+    first pass with a generic 'unclear image' response."""
+    # Pass 1: strict prompt
+    text = await _call_gemini_json(image_b64, EXTRACTION_PROMPT, "items-p1")
+    items = _parse_items_json(text)
+    if items:
+        return items
+
+    logger.warning("paper-order OCR: pass 1 returned 0 items — retrying with lenient prompt")
+
+    # Pass 2: lenient retry — nudges the model to try harder before giving up
+    text2 = await _call_gemini_json(image_b64, LENIENT_RETRY_PROMPT, "items-p2")
+    items = _parse_items_json(text2)
+    if items:
+        logger.info("paper-order OCR: pass 2 recovered %d items", len(items))
+        return items
+
+    logger.warning("paper-order OCR: both passes returned 0 items")
+    return []
 
 
 async def _gemini_extract_metadata(image_b64: str) -> Dict[str, Any]:
-    """Call Gemini 3 Flash to extract header metadata (best-effort)."""
-    try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
-
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"paperorder-meta-{uuid.uuid4()}",
-            system_message="أنت مساعد يستخرج بيانات رأس الفاتورة.",
-        ).with_model("gemini", "gemini-3-flash-preview")
-        msg = UserMessage(text=METADATA_PROMPT,
-                          file_contents=[ImageContent(image_base64=image_b64)])
-        resp = await chat.send_message(msg)
-        text = (resp or "").strip()
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-        s = text.find("{")
-        e = text.rfind("}")
-        if s == -1 or e == -1:
-            return {}
-        obj = json.loads(text[s: e + 1])
-        if not isinstance(obj, dict):
-            return {}
-        return {
-            "supplier_name": (obj.get("supplier_name") or None) or None,
-            "invoice_number": (obj.get("invoice_number") or None) or None,
-            "invoice_date":  _parse_expiry_safe(obj.get("invoice_date")),
-            "total": float(obj.get("total") or 0),
-        }
-    except Exception:
-        logger.exception("paper-order metadata extraction failed")
+    """Extract header metadata (supplier, invoice number, date, total)."""
+    text = await _call_gemini_json(image_b64, METADATA_PROMPT, "meta")
+    if not text:
         return {}
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    s = text.find("{")
+    e = text.rfind("}")
+    if s == -1 or e == -1:
+        return {}
+    try:
+        obj = json.loads(text[s: e + 1])
+    except Exception:
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    return {
+        "supplier_name": (obj.get("supplier_name") or None) or None,
+        "invoice_number": (obj.get("invoice_number") or None) or None,
+        "invoice_date":  _parse_expiry_safe(obj.get("invoice_date")),
+        "total": float(obj.get("total") or 0),
+    }
 
 
 # =====================================================================
@@ -216,22 +271,45 @@ def install_routes(require_role):
     @router_paper_orders.post("/orders/scan-image")
     async def _scan_image(data: ScanImageIn,
                           user: dict = Depends(require_role("pharmacy"))):
-        """Runs Gemini 3 Flash on the image. Non-persistent — returns
-        extracted items + inferred metadata for the frontend review step."""
+        """Runs Gemini 3 Flash on the image with a two-pass strategy
+        (strict + lenient retry). Returns extracted items + metadata for
+        the frontend review step. Includes a `hint` field on empty results
+        so the UI can show a helpful message instead of the generic
+        'الصورة غير واضحة'."""
         image_b64 = (data.image_base64 or "").strip()
-        # Tolerate data-URLs
         if image_b64.startswith("data:") and "," in image_b64:
             image_b64 = image_b64.split(",", 1)[1]
         if len(image_b64) < 100:
             raise HTTPException(400, "الصورة غير صالحة")
+        # Size guard: refuse absurdly small images that Gemini can't OCR
+        approx_bytes = int(len(image_b64) * 0.75)
+        if approx_bytes < 10 * 1024:      # <10 KB → almost certainly unreadable
+            return {
+                "items": [], "metadata": {}, "count": 0,
+                "hint": "الصورة صغيرة جداً. حاول التقاط الصورة بجودة أعلى أو مسافة أقرب.",
+            }
+        # Guard against oversized payloads (>10 MB decoded)
+        if approx_bytes > 10 * 1024 * 1024:
+            raise HTTPException(413, "الصورة كبيرة جداً — يُرجى إعادة الالتقاط بحجم أصغر")
 
         items = await _gemini_extract_items(image_b64)
         meta = await _gemini_extract_metadata(image_b64)
-        return {
+
+        response = {
             "items": items,
             "metadata": meta,
             "count": len(items),
         }
+        if not items:
+            # Distinguish between "we understood the image but no items" and
+            # a real OCR failure so the UI can give useful guidance.
+            if meta and (meta.get("supplier_name") or meta.get("invoice_number")):
+                response["hint"] = ("تعرّفنا على رأس الفاتورة لكن لم نستطع قراءة الأصناف بوضوح. "
+                                    "جرّب: (1) تصوير الجدول عن قرب (2) إضاءة أفضل (3) إزالة الظلال (4) تصوير أفقي.")
+            else:
+                response["hint"] = ("لم نتمكن من قراءة الصورة. تأكد من: وضع الفاتورة على سطح مستوٍ، "
+                                    "إضاءة كافية بدون انعكاس، والصورة مركّزة على الجدول كاملاً.")
+        return response
 
     @router_paper_orders.post("/orders/paper", status_code=201)
     async def _commit_paper_order(data: CommitPaperOrderIn,

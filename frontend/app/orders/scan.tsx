@@ -53,7 +53,7 @@ export default function ScanPaperOrder() {
     const r = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       base64: true,
-      quality: 0.85,
+      quality: 1.0,           // full resolution — OCR accuracy scales with clarity
       allowsEditing: false,
     });
     if (r.canceled || !r.assets?.[0]?.base64) return;
@@ -70,7 +70,7 @@ export default function ScanPaperOrder() {
     }
     const r = await ImagePicker.launchCameraAsync({
       base64: true,
-      quality: 0.85,
+      quality: 1.0,           // full resolution — better OCR on small text
       allowsEditing: false,
     });
     if (r.canceled || !r.assets?.[0]?.base64) return;
@@ -104,7 +104,11 @@ export default function ScanPaperOrder() {
       if (m.total) setTotal(String(m.total));
       setStep('review');
       if (extracted.length === 0) {
-        Alert.alert('لم يتم استخراج أي صنف', 'يمكنك إضافة الأصناف يدوياً أو المحاولة بصورة أوضح.');
+        // Backend now returns a smart `hint` that tells us WHY the OCR
+        // failed (unreadable vs. header-only vs. tiny image). Prefer it
+        // over the generic 'unclear image' message.
+        const hint = (r?.hint as string) || 'يمكنك إضافة الأصناف يدوياً أو المحاولة بصورة أوضح.';
+        Alert.alert('تعذّر استخراج الأصناف تلقائياً', hint);
       }
     } catch (e: any) {
       Alert.alert('خطأ', e.message || 'فشل التعرف على الصورة');

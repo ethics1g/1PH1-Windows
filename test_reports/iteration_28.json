@@ -1,0 +1,41 @@
+{
+  "summary": "Verified two-pass OCR fallback + `hint` field for /api/orders/scan-image and frontend scan screen regression. All 6 new backend tests pass. Two-pass retry provably fires (backend logs show 'pass 1 returned 0 items — retrying with lenient prompt' followed by items-p2 attempt). Size guards work: <10KB → hint 'الصورة صغيرة جداً', >10MB → 413, <100 chars → 400. Frontend /orders/scan screen renders correctly on 375x667 mobile viewport with both camera and gallery buttons visible and tappable. Regression smoke on /orders/paper commit + list still green. IMPORTANT: real Gemini OCR is CURRENTLY BROKEN in this environment — `emergentintegrations` fails with 'No module named fastuuid.fastuuid' on every call, so items are always empty, but the new hint fallback correctly shields the user from a silent failure.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/orders/scan-image (LlmChat)",
+        "issue": "emergentintegrations is broken in the container: every Gemini call raises 'No module named fastuuid.fastuuid'. Result: OCR ALWAYS returns 0 items regardless of image quality. The new two-pass retry + hint logic correctly masks this from the UI, but the real OCR feature is non-functional until this dependency is fixed. Reference: /var/log/supervisor/backend.err.log — repeated 'paper-order OCR failed (items-p1 / gemini-3-flash-preview): No module named fastuuid.fastuuid' entries.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_paper_orders_ocr_fallback.py",
+    "/app/test_reports/pytest/pytest_iter28_ocr_fallback.xml"
+  ],
+  "action_items": [
+    "URGENT: Fix `emergentintegrations` runtime error 'No module named fastuuid.fastuuid'. Reinstall the package (pip install --force-reinstall emergentintegrations fastuuid) or pin a working version. Without this, Gemini OCR is 100% broken end-to-end and users will always see the hint fallback — never real extraction. This is the ROOT cause of the user's original complaint (invoice returned 0 items).",
+    "Once emergentintegrations is functional, retest with a real invoice photo to confirm items > 0."
+  ],
+  "critical_code_review_comments": [
+    "paper_orders.py:113 — _call_gemini_json swallows the exception and returns empty string. Good for graceful degradation, but the retry pass will then also fail for the exact same reason, wasting one extra Gemini quota unit. Consider caching the error type on first call and short-circuiting pass 2 if the error is import-time / config-time (e.g., ModuleNotFoundError).",
+    "paper_orders.py:292 — >10MB size check happens before base64 sanity validation of content; that's fine but a bad base64 payload of the right length would still reach Gemini. Low priority.",
+    "scan.tsx:83-118 — runScan uses `apiFetch` which will throw on 413/400; the catch block shows a generic 'خطأ' alert without surfacing the backend `detail` for 413. Minor UX polish."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_paper_orders_ocr_fallback.py (new)"
+  ],
+  "success_rate": {"backend": "100% (6/6 new tests)", "frontend": "100% (screen loads, buttons visible & tappable)"},
+  "seed_data_creation": "One regression paper order created via TestRegressionSmoke; benign, named TEST_OCR_REG_<ts>",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Fallback + hint logic is proven working via unit tests and backend logs. The real user-visible bug (OCR returns 0 items on a clear invoice) is NOT solved by this iteration — it is masked by the new hint. Root cause is emergentintegrations import error. Ask user to reinstall or update the emergentintegrations python package.",
+  "rca_of_issue": "Root cause of the original bug 'AI OCR returned 0 items on a clear invoice' is that emergentintegrations fails to import fastuuid.fastuuid at LlmChat instantiation time, so send_message never actually reaches Gemini. Every call short-circuits to the exception handler → empty string → 0 items. This iteration's fix (two-pass + hint) improves the UX around the failure but does NOT restore OCR. Fix: repair the emergentintegrations dependency chain."
+}
