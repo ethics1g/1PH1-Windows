@@ -1,27 +1,35 @@
 /**
- * Cross-platform external barcode scanner support.
+ * External barcode scanner support (USB / Bluetooth HID keyboard emulators)
+ * =============================================================================
+ * Provides a single global listener that turns rapid-keystroke bursts from an
+ * HID barcode scanner into a single onScan callback — WITHOUT adding any UI.
  *
- * Detects USB/Bluetooth HID scanners that behave as keyboard emulators
- * (the vast majority of barcode readers, including Zebra, Honeywell,
- * Datalogic in their default HID mode). Also works on desktop / web /
- * emulator because it listens to `keydown` events on the web build,
- * and uses a hidden auto-focused TextInput on native platforms.
+ * Guarantees (per user requirement):
+ *   1. Scanner keystrokes are captured GLOBALLY on the screen, no matter which
+ *      field is focused. Barcode digits NEVER leak into price/quantity/name or
+ *      any other input.
+ *   2. Enter and Tab characters sent by the scanner are consumed here — they
+ *      cannot trigger button clicks or navigate away.
+ *   3. After each successful scan, if the screen has a "target" barcode input
+ *      (marked with `data-barcode-input="1"` on web or the hidden HID input on
+ *      native), focus is returned to it so the next scan is captured with no
+ *      user interaction.
  *
- * Usage from any screen:
+ * Web strategy (delayed-commit pattern):
+ *   - We attach `keydown` at document level in the CAPTURE phase so we see
+ *     every key before any focused input.
+ *   - When a digit arrives and we're NOT already in a burst, we `preventDefault`
+ *     immediately and buffer it, then start a 45 ms "decide" window. If a
+ *     second key arrives inside that window we lock into burst mode; if not,
+ *     the char was a human keystroke and we programmatically restore it into
+ *     the originally-focused field (so a lone typed digit is never lost).
+ *   - Inside a burst, every subsequent char is preventDefault'd and appended
+ *     to the buffer until Enter/Tab arrives, at which point we emit.
  *
- *   useExternalScanner((barcode) => {
- *     // handle scanned barcode
- *   }, { enabled: !isBusy });
- *
- * Design notes:
- *  - We treat a burst of characters (< 60ms between keystrokes) followed
- *    by Enter as a scanner input — humans typing on a physical keyboard
- *    are slower than that.
- *  - Non-invasive: existing camera scanning (MedicineScanner) keeps
- *    working; this listener only reads events, never blocks them.
- *  - Extensible: future support for Zebra DataWedge / Honeywell
- *    Intents / SDK-based scanners can be added as additional strategies
- *    without changing consumers.
+ * Native strategy:
+ *   - A hidden zero-size `TextInput` is kept auto-focused whenever a screen
+ *     is subscribed. Bluetooth HID scanners route keystrokes to it and its
+ *     `onSubmitEditing` fires on Enter, calling registered handlers.
  */
 import React, {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
@@ -33,24 +41,22 @@ import { Platform, TextInput, View, StyleSheet } from 'react-native';
 type Handler = (barcode: string) => void;
 
 type ScannerContextValue = {
-  /** Register a handler. Returns an unregister function. */
   register: (h: Handler) => () => void;
-  /** How many active listeners — informational. */
   activeCount: number;
 };
 
 const ScannerContext = createContext<ScannerContextValue | null>(null);
 
-// ---------------- PROVIDER ---------------------------------------------
-
-const BURST_MS = 60;          // max ms between "scanner" keystrokes
+// Tunables
+const HOLD_MS = 45;          // window to decide "burst vs. human" for FIRST char
+const BURST_CONT_MS = 65;    // max gap between chars inside a burst
 const MIN_BARCODE_LEN = 4;
+
+// ---------------- PROVIDER ---------------------------------------------
 
 export function ExternalScannerProvider({ children }: { children: React.ReactNode }) {
   const handlersRef = useRef<Set<Handler>>(new Set());
   const [activeCount, setActiveCount] = useState(0);
-  const bufferRef = useRef<string>('');
-  const lastKeyAtRef = useRef<number>(0);
   const hiddenInputRef = useRef<TextInput>(null);
 
   const register = useCallback((h: Handler) => {
@@ -65,50 +71,164 @@ export function ExternalScannerProvider({ children }: { children: React.ReactNod
   const emit = useCallback((code: string) => {
     const trimmed = (code || '').trim();
     if (trimmed.length < MIN_BARCODE_LEN) return;
-    // Fan out to all currently-registered handlers
     handlersRef.current.forEach((h) => {
       try { h(trimmed); } catch { /* isolate handler errors */ }
     });
+    // After emit, focus the designated barcode input on the current screen
+    // (if any) so continuous scanning works without touching the screen.
+    if (Platform.OS === 'web') {
+      const doc: any = (globalThis as any).document;
+      const target = doc && doc.querySelector && doc.querySelector('[data-barcode-input="1"]');
+      if (target && typeof target.focus === 'function') {
+        setTimeout(() => { try { target.focus(); } catch { /* noop */ } }, 30);
+      }
+    } else {
+      setTimeout(() => { try { hiddenInputRef.current?.focus(); } catch { /* noop */ } }, 30);
+    }
   }, []);
 
-  // ---- WEB: listen to window keydown events (fires anywhere on page) ----
+  // -------- WEB: document-level keydown with delayed-commit ------------
   useEffect(() => {
     if (Platform.OS !== 'web') return;
-    const handleKey = (e: any) => {
-      // Skip if a form input is focused AND has real user typing
-      // (we only want physical scanner traffic). We detect by burst
-      // timing regardless of focus.
-      const now = Date.now();
-      const dt = now - lastKeyAtRef.current;
-      lastKeyAtRef.current = now;
-      if (e.key === 'Enter' || e.key === '\n') {
-        const code = bufferRef.current;
-        bufferRef.current = '';
-        if (code) emit(code);
-        return;
-      }
-      if (dt > BURST_MS && bufferRef.current.length > 0) {
-        // Slow typing — reset buffer (this is a human)
-        bufferRef.current = '';
-      }
-      if (typeof e.key === 'string' && e.key.length === 1) {
-        bufferRef.current += e.key;
-      }
-    };
-    // Cast to any for the RN-Web `document` polyfill
+    if (activeCount === 0) return;      // only intercept while a screen listens
+
     const doc: any = (globalThis as any).document;
     if (!doc || !doc.addEventListener) return;
-    doc.addEventListener('keydown', handleKey);
-    return () => { doc.removeEventListener('keydown', handleKey); };
-  }, [emit]);
 
-  // ---- NATIVE: hidden always-focused TextInput captures HID output ----
-  // HID Bluetooth scanners on iOS/Android post keystrokes to the focused
-  // input. We keep a 0×0 offscreen input focused; each scan submits.
-  const onSubmit = useCallback((e: any) => {
+    const isEditable = (el: any): boolean => {
+      if (!el) return false;
+      const tag = (el.tagName || '').toUpperCase();
+      if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (tag === 'INPUT') {
+        const t = (el.type || 'text').toLowerCase();
+        return ['text', 'search', 'number', 'tel', 'url', 'email', 'password'].includes(t);
+      }
+      return !!el.isContentEditable;
+    };
+    const isBarcodeTarget = (el: any): boolean =>
+      !!(el && el.getAttribute && el.getAttribute('data-barcode-input') === '1');
+
+    // Programmatic value-set that triggers React's onChange
+    const restoreToField = (el: any, chars: string) => {
+      if (!el || !chars) return;
+      try {
+        const w: any = globalThis as any;
+        const proto = w.HTMLInputElement && w.HTMLInputElement.prototype;
+        const setter = proto && Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        const next = (el.value || '') + chars;
+        if (setter) setter.call(el, next); else el.value = next;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      } catch { /* best-effort */ }
+    };
+
+    let buffer = '';
+    let originTarget: any = null;
+    let holdTimer: any = null;
+    let lastKeyAt = 0;
+
+    const clearHold = () => { if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; } };
+
+    const flush = (asBarcode: boolean) => {
+      clearHold();
+      const buf = buffer;
+      const tgt = originTarget;
+      buffer = '';
+      originTarget = null;
+      if (!buf) return;
+      if (asBarcode && buf.length >= MIN_BARCODE_LEN) {
+        emit(buf);
+      } else if (!asBarcode && tgt) {
+        // Not a scanner burst — put char(s) back where they belong so lone
+        // human keystrokes are never lost.
+        restoreToField(tgt, buf);
+      }
+    };
+
+    const onKeyDown = (e: any) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const now = Date.now();
+      const dt = now - lastKeyAt;
+      lastKeyAt = now;
+
+      const key = e.key as string;
+      const isChar = typeof key === 'string' && key.length === 1;
+      const isTerminator = key === 'Enter' || key === 'Tab';
+      const isDigit = isChar && key >= '0' && key <= '9';
+
+      const active = doc.activeElement;
+      const onBarcode = isBarcodeTarget(active);
+      const onOtherEditable = !onBarcode && isEditable(active);
+
+      // -------- Path A: designated barcode field is focused --------
+      // Chars type into it normally. On Enter/Tab we emit its value.
+      if (onBarcode) {
+        if (isTerminator) {
+          e.preventDefault(); e.stopPropagation();
+          const v = (active.value || '') as string;
+          try {
+            const w: any = globalThis as any;
+            const proto = w.HTMLInputElement && w.HTMLInputElement.prototype;
+            const setter = proto && Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+            if (setter) setter.call(active, ''); else active.value = '';
+            active.dispatchEvent(new Event('input', { bubbles: true }));
+          } catch { /* noop */ }
+          emit(v);
+        }
+        return;
+      }
+
+      // -------- Path B: already inside a burst on some other field --------
+      if (buffer && dt < BURST_CONT_MS) {
+        if (isChar) {
+          e.preventDefault(); e.stopPropagation();
+          buffer += key;
+          clearHold();
+          holdTimer = setTimeout(() => flush(true), HOLD_MS + 30);
+          return;
+        }
+        if (isTerminator) {
+          e.preventDefault(); e.stopPropagation();
+          flush(true);
+          return;
+        }
+        return;
+      }
+
+      // -------- Path C: fresh keystroke on a non-barcode input --------
+      // We only intercept DIGITS here (barcodes are numeric). Human text
+      // typing (letters, Arabic characters) is never touched.
+      if (onOtherEditable && isDigit) {
+        e.preventDefault(); e.stopPropagation();
+        buffer = key;
+        originTarget = active;
+        clearHold();
+        holdTimer = setTimeout(() => flush(false), HOLD_MS);
+        return;
+      }
+
+      // -------- Path D: fresh keystroke with no editable focus --------
+      // Scanner may fire while nothing is focused — still capture it.
+      if (!onOtherEditable && isDigit) {
+        e.preventDefault(); e.stopPropagation();
+        buffer = key;
+        originTarget = null;                       // nowhere to restore to
+        clearHold();
+        holdTimer = setTimeout(() => flush(false), HOLD_MS);
+      }
+      // Enter/Tab with no buffer → let through (real user Enter).
+    };
+
+    doc.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      doc.removeEventListener('keydown', onKeyDown, true);
+      clearHold();
+    };
+  }, [emit, activeCount]);
+
+  // -------- NATIVE: hidden always-focused input catches HID output ----
+  const onNativeSubmit = useCallback((e: any) => {
     const val = (e?.nativeEvent?.text || '') as string;
     if (val && val.length >= MIN_BARCODE_LEN) emit(val);
-    // Re-focus for next scan
     hiddenInputRef.current?.clear();
     setTimeout(() => hiddenInputRef.current?.focus(), 30);
   }, [emit]);
@@ -128,9 +248,8 @@ export function ExternalScannerProvider({ children }: { children: React.ReactNod
             autoFocus={false}
             blurOnSubmit={false}
             caretHidden
-            showSoftInputOnFocus={false}   // prevent virtual keyboard
-            onSubmitEditing={onSubmit}
-            // Only auto-focus when at least one screen is listening
+            showSoftInputOnFocus={false}
+            onSubmitEditing={onNativeSubmit}
             {...(activeCount > 0 ? { autoFocus: true } : {})}
           />
         </View>
@@ -144,9 +263,9 @@ export function ExternalScannerProvider({ children }: { children: React.ReactNod
 type Options = { enabled?: boolean };
 
 /**
- * Subscribe the current screen to external barcode scans.
- * The callback receives the scanned string. Fully isolated per-screen —
- * mounting/unmounting cleans up automatically.
+ * Subscribe the current screen to external barcode scans. The callback
+ * receives the scanned string. Isolated per-screen — mounting/unmounting
+ * cleans up automatically.
  */
 export function useExternalScanner(cb: Handler, opts: Options = {}) {
   const ctx = useContext(ScannerContext);

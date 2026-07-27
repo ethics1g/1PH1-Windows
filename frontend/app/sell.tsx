@@ -9,7 +9,7 @@ import { colors } from '../src/theme';
 import ScreenHeader from '../src/ScreenHeader';
 import MedicineScanner from '../src/MedicineScanner';
 import MedicineAutocomplete from '../src/MedicineAutocomplete';
-import BarcodeCaptureBar from '../src/BarcodeCaptureBar';
+import { useExternalScanner } from '../src/externalScanner';
 
 type CartItem = { medicine_id: string; name: string; price: number; quantity: number; stock: number };
 
@@ -53,6 +53,15 @@ export default function Sell() {
       setBusy(false);
     }
   };
+
+  // Support USB/Bluetooth HID barcode scanners. On web, the enhanced hook
+  // intercepts scanner bursts at document level, prevents keystrokes from
+  // leaking into ANY focused input (price, quantity, name, etc.), then
+  // fires this same handler. No visible field is added — the existing
+  // camera button + autocomplete remain the only UI.
+  useExternalScanner(handleBarcode, {
+    enabled: !scannerOpen && !busy && !creditModalOpen,
+  });
 
   const handleImage = async (base64: string) => {
     setBusy(true);
@@ -136,26 +145,11 @@ export default function Sell() {
       >
         {busy ? <ActivityIndicator color="#fff" /> : (
           <>
-            <Ionicons name="camera" size={26} color="#fff" />
-            <Text style={styles.scanBtnTxt}>التعرف على الدواء بالصورة (كاميرا)</Text>
+            <Ionicons name="scan" size={26} color="#fff" />
+            <Text style={styles.scanBtnTxt}>مسح الدواء بالباركود أو الصورة</Text>
           </>
         )}
       </TouchableOpacity>
-
-      {/* Unified barcode input — supports BOTH camera and USB/Bluetooth HID
-          scanners in the same field. Barcode data is always captured here,
-          never in other fields. */}
-      <View style={{ paddingHorizontal: 14, marginBottom: 8 }}>
-        <BarcodeCaptureBar
-          testID="sell-barcode"
-          label="الباركود"
-          placeholder="امسح بقارئ الباركود أو استخدم الكاميرا"
-          onScan={handleBarcode}
-          onOpenCamera={() => setScannerOpen(true)}
-          disabled={busy}
-          autoFocusEnabled={!scannerOpen && !busy && !creditModalOpen}
-        />
-      </View>
 
       {/* Manual name search — 3rd input method */}
       <View style={{ paddingHorizontal: 14, marginBottom: 8, zIndex: 5 }}>

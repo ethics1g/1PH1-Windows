@@ -10,9 +10,9 @@ import { useAuth, apiFetch } from '../src/auth';
 import { colors } from '../src/theme';
 import ScreenHeader from '../src/ScreenHeader';
 import MedicineScanner from '../src/MedicineScanner';
-import BarcodeCaptureBar from '../src/BarcodeCaptureBar';
 import ExpiryDateField from '../src/ExpiryDateField';
 import { normalizeExpiryDate } from '../src/utils/dateUtils';
+import { useExternalScanner } from '../src/externalScanner';
 
 export default function Buy() {
   const router = useRouter();
@@ -41,6 +41,12 @@ export default function Buy() {
       Alert.alert('موجود', `${existing.name} - الرصيد الحالي: ${existing.quantity}`);
     } catch {}
   };
+
+  // USB/Bluetooth HID barcode scanner support. On web the hook intercepts
+  // scanner bursts globally, prevents them from leaking into other inputs
+  // (name/price/quantity/expiry), fills the existing 'الباركود' field, and
+  // refocuses it after processing. No new UI elements are added.
+  useExternalScanner(handleBarcode, { enabled: !scannerOpen && !busy });
 
   const handleImage = async (base64: string) => {
     setImage(base64);
@@ -140,26 +146,18 @@ export default function Buy() {
             onPress={() => setScannerOpen(true)}
             disabled={busy}
           >
-            <Ionicons name="camera" size={22} color="#fff" />
-            <Text style={styles.scanBtnTxt}>التعرف على الدواء بالصورة (كاميرا)</Text>
+            <Ionicons name="scan" size={22} color="#fff" />
+            <Text style={styles.scanBtnTxt}>مسح الباركود / صورة الدواء</Text>
           </TouchableOpacity>
 
-          {/* Unified barcode input — works with BOTH camera and USB/Bluetooth
-              HID scanners. Any barcode data from a scanner is routed here
-              only, never into other fields. */}
-          <BarcodeCaptureBar
-            testID="buy-barcode"
-            label="الباركود"
-            placeholder="امسح بقارئ الباركود أو من الكاميرا"
-            value={barcode}
-            onChangeText={setBarcode}
-            onScan={handleBarcode}
-            onOpenCamera={() => setScannerOpen(true)}
-            disabled={busy}
-            autoFocusEnabled={!scannerOpen && !busy}
-          />
-
           <Field label="اسم الدواء" value={name} onChange={setName} testID="buy-name" />
+          <Field
+            label="الباركود (اختياري)"
+            value={barcode}
+            onChange={setBarcode}
+            testID="buy-barcode"
+            isBarcode
+          />
 
           <View style={styles.row}>
             <View style={{ flex: 1 }}>
@@ -202,7 +200,14 @@ export default function Buy() {
   );
 }
 
-function Field({ label, value, onChange, testID, keyboardType }: { label: string; value: string; onChange: (v: string) => void; testID: string; keyboardType?: 'default' | 'numeric' }) {
+function Field({ label, value, onChange, testID, keyboardType, isBarcode }: { label: string; value: string; onChange: (v: string) => void; testID: string; keyboardType?: 'default' | 'numeric'; isBarcode?: boolean }) {
+  // Marking the barcode input with a data attribute + testID lets the
+  // external HID scanner listener recognise it, redirect scanner bursts
+  // into it (never into price/quantity/name), and refocus it after each
+  // scan for continuous scanning.
+  const webA11yProps = Platform.OS === 'web' && isBarcode
+    ? ({ dataSet: { barcodeInput: '1' } } as any)
+    : {};
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
@@ -213,6 +218,9 @@ function Field({ label, value, onChange, testID, keyboardType }: { label: string
         onChangeText={onChange}
         keyboardType={keyboardType || 'default'}
         textAlign="right"
+        autoCapitalize="none"
+        autoCorrect={false}
+        {...webA11yProps}
       />
     </View>
   );
