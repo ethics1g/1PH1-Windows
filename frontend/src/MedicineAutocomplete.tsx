@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList, Activity
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
 import { apiFetch, useAuth } from './auth';
+import { useHidGuardedChange } from './hidGuard';
 
 export type MedicineHit = {
   id: string;
@@ -49,6 +50,11 @@ export default function MedicineAutocomplete({ onSelect, placeholder, autoFocus,
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [q, search]);
 
+  // HID scanner guard — if a USB/Bluetooth HID barcode scanner sends
+  // digits into this search field, revert them and route to the global
+  // scanner handler (which resolves the medicine and adds to cart).
+  const guard = useHidGuardedChange(q, (v) => { setQ(v); setOpen(true); });
+
   return (
     <View style={styles.wrap}>
       <View style={styles.inputWrap}>
@@ -57,7 +63,8 @@ export default function MedicineAutocomplete({ onSelect, placeholder, autoFocus,
           testID={testID || 'ac-input'}
           style={styles.input}
           value={q}
-          onChangeText={(t) => { setQ(t); setOpen(true); }}
+          onChangeText={guard.onChangeText}
+          onKeyPress={guard.onKeyPress}
           onFocus={() => setOpen(true)}
           placeholder={placeholder || 'ابحث عن اسم الدواء...'}
           placeholderTextColor={colors.textMuted}
@@ -65,6 +72,7 @@ export default function MedicineAutocomplete({ onSelect, placeholder, autoFocus,
           autoFocus={autoFocus}
           autoCorrect={false}
           autoCapitalize="none"
+          blurOnSubmit={false}
         />
         {q ? (
           <TouchableOpacity onPress={() => { setQ(''); setHits([]); }} style={styles.clearBtn}>

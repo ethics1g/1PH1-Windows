@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { colors } from './theme';
 import { normalizeExpiryDate, dateToYMD, ymdToDate } from './utils/dateUtils';
+import { useHidGuardedChange } from './hidGuard';
 
 type Props = {
   value: string;                       // raw text the user has typed
@@ -62,6 +63,10 @@ export default function ExpiryDateField({
     return d;
   })();
 
+  // HID scanner guard: expiry field would otherwise absorb barcode digit
+  // bursts. The guard reverts and streams them to the shared HID buffer.
+  const guard = useHidGuardedChange(value, (t) => { onChange(t); if (error) setError(null); });
+
   return (
     <View style={styles.wrap}>
       <Text style={styles.label}>
@@ -79,7 +84,8 @@ export default function ExpiryDateField({
           testID={testID || 'expiry-input'}
           style={[styles.input, error ? styles.inputError : null]}
           value={value}
-          onChangeText={(t) => { onChange(t); if (error) setError(null); }}
+          onChangeText={guard.onChangeText}
+          onKeyPress={guard.onKeyPress}
           onBlur={() => commit(value)}
           placeholder="مثال: 2027-04-01 أو 1/4/2027"
           placeholderTextColor={colors.textMuted}
@@ -88,6 +94,7 @@ export default function ExpiryDateField({
           autoCorrect={false}
           autoCapitalize="none"
           maxLength={10}
+          blurOnSubmit={false}
         />
       </View>
       {error ? (

@@ -10,6 +10,7 @@ import ScreenHeader from '../src/ScreenHeader';
 import MedicineScanner from '../src/MedicineScanner';
 import MedicineAutocomplete from '../src/MedicineAutocomplete';
 import { useExternalScanner } from '../src/externalScanner';
+import { useHidGuardedChange, useHidGuardListener } from '../src/hidGuard';
 
 type CartItem = { medicine_id: string; name: string; price: number; quantity: number; stock: number };
 
@@ -54,14 +55,23 @@ export default function Sell() {
     }
   };
 
-  // Support USB/Bluetooth HID barcode scanners. On web, the enhanced hook
-  // intercepts scanner bursts at document level, prevents keystrokes from
-  // leaking into ANY focused input (price, quantity, name, etc.), then
-  // fires this same handler. No visible field is added — the existing
-  // camera button + autocomplete remain the only UI.
+  // ---- HID scanner support (works on Android/iOS/Web) --------------
+  // Sell screen has NO visible barcode field — the HID input is captured
+  // GLOBALLY. Every TextInput on this screen (autocomplete + credit-modal
+  // fields) uses `useHidGuardedChange` which reverts scanner-speed digit
+  // bursts and streams them to the HID buffer. The listener below is
+  // called with the completed barcode and adds the medicine to the cart.
+  useHidGuardListener(handleBarcode, !scannerOpen && !busy && !creditModalOpen);
+  // Legacy web-only interception (kept for browser preview parity)
   useExternalScanner(handleBarcode, {
     enabled: !scannerOpen && !busy && !creditModalOpen,
   });
+
+  // Guarded change handlers for each modal / autocomplete input.
+  const custNameGuard = useHidGuardedChange(customerName, setCustomerName);
+  const custPhoneGuard = useHidGuardedChange(customerPhone, setCustomerPhone);
+  const custNotesGuard = useHidGuardedChange(customerNotes, setCustomerNotes);
+  const custPaidGuard = useHidGuardedChange(amountPaid, setAmountPaid);
 
   const handleImage = async (base64: string) => {
     setBusy(true);
@@ -234,16 +244,16 @@ export default function Sell() {
             </View>
             <ScrollView contentContainerStyle={{ padding: 14 }} keyboardShouldPersistTaps="handled">
               <Text style={styles.lbl}>اسم الزبون *</Text>
-              <TextInput testID="cust-name" style={styles.mInput} value={customerName} onChangeText={setCustomerName} placeholder="مثال: أحمد محمد" placeholderTextColor={colors.textMuted} textAlign="right" />
+              <TextInput testID="cust-name" style={styles.mInput} value={customerName} onChangeText={custNameGuard.onChangeText} onKeyPress={custNameGuard.onKeyPress} placeholder="مثال: أحمد محمد" placeholderTextColor={colors.textMuted} textAlign="right" blurOnSubmit={false} />
 
               <Text style={styles.lbl}>رقم الهاتف (اختياري)</Text>
-              <TextInput testID="cust-phone" style={styles.mInput} value={customerPhone} onChangeText={setCustomerPhone} placeholder="07XX-XXX-XXXX" placeholderTextColor={colors.textMuted} textAlign="right" keyboardType="phone-pad" maxLength={20} />
+              <TextInput testID="cust-phone" style={styles.mInput} value={customerPhone} onChangeText={custPhoneGuard.onChangeText} onKeyPress={custPhoneGuard.onKeyPress} placeholder="07XX-XXX-XXXX" placeholderTextColor={colors.textMuted} textAlign="right" keyboardType="phone-pad" maxLength={20} blurOnSubmit={false} />
 
               <Text style={styles.lbl}>ملاحظات (اختياري)</Text>
-              <TextInput testID="cust-notes" style={[styles.mInput, { height: 60, textAlignVertical: 'top' }]} value={customerNotes} onChangeText={setCustomerNotes} multiline placeholder="أي معلومات إضافية عن الزبون..." placeholderTextColor={colors.textMuted} textAlign="right" />
+              <TextInput testID="cust-notes" style={[styles.mInput, { height: 60, textAlignVertical: 'top' }]} value={customerNotes} onChangeText={custNotesGuard.onChangeText} onKeyPress={custNotesGuard.onKeyPress} multiline placeholder="أي معلومات إضافية عن الزبون..." placeholderTextColor={colors.textMuted} textAlign="right" />
 
               <Text style={styles.lbl}>دفعة أولية (اختياري)</Text>
-              <TextInput testID="cust-paid" style={styles.mInput} value={amountPaid} onChangeText={setAmountPaid} placeholder={`0 (المتبقي ${total.toLocaleString()} د.ع سيُسجَّل كدين)`} placeholderTextColor={colors.textMuted} textAlign="right" keyboardType="decimal-pad" />
+              <TextInput testID="cust-paid" style={styles.mInput} value={amountPaid} onChangeText={custPaidGuard.onChangeText} onKeyPress={custPaidGuard.onKeyPress} placeholder={`0 (المتبقي ${total.toLocaleString()} د.ع سيُسجَّل كدين)`} placeholderTextColor={colors.textMuted} textAlign="right" keyboardType="decimal-pad" blurOnSubmit={false} />
 
               <TouchableOpacity testID="btn-confirm-credit" style={styles.confirmBtn} onPress={checkout} disabled={busy || !customerName.trim()}>
                 {busy ? <ActivityIndicator color="#fff" /> : (

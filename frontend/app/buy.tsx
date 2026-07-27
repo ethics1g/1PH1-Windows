@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator, Alert, ScrollView,
   KeyboardAvoidingView, Platform,
@@ -13,6 +13,7 @@ import MedicineScanner from '../src/MedicineScanner';
 import ExpiryDateField from '../src/ExpiryDateField';
 import { normalizeExpiryDate } from '../src/utils/dateUtils';
 import { useExternalScanner } from '../src/externalScanner';
+import { useHidGuardedChange, useHidGuardListener, useHidRefocus } from '../src/hidGuard';
 
 export default function Buy() {
   const router = useRouter();
@@ -26,6 +27,7 @@ export default function Buy() {
   const [expiryDate, setExpiryDate] = useState(''); // YYYY-MM-DD
   const [image, setImage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const barcodeInputRef = useRef<TextInput>(null);
 
   const reset = () => {
     setName(''); setBarcode(''); setQuantity('1'); setPrice(''); setPurchasePrice(''); setExpiryDate(''); setImage(null);
@@ -42,10 +44,18 @@ export default function Buy() {
     } catch {}
   };
 
-  // USB/Bluetooth HID barcode scanner support. On web the hook intercepts
-  // scanner bursts globally, prevents them from leaking into other inputs
-  // (name/price/quantity/expiry), fills the existing 'الباركود' field, and
-  // refocuses it after processing. No new UI elements are added.
+  // ---- HID scanner support (works on Android/iOS/Web) --------------
+  // Every non-barcode TextInput on this screen uses `useHidGuardedChange`
+  // (see the `Field` component below) which:
+  //   • intercepts digit bursts arriving at scanner speed,
+  //   • reverts the field so nothing leaks visually,
+  //   • pipes chars into a shared HID buffer.
+  // On Enter/Tab OR after an idle window, the buffer is flushed via this
+  // listener which loads the medicine and refocuses the barcode field for
+  // the next continuous scan.
+  useHidGuardListener(handleBarcode, !scannerOpen && !busy);
+  useHidRefocus(() => barcodeInputRef.current?.focus(), !scannerOpen && !busy);
+  // Legacy web-only interception (kept for browser preview parity)
   useExternalScanner(handleBarcode, { enabled: !scannerOpen && !busy });
 
   const handleImage = async (base64: string) => {
@@ -157,6 +167,7 @@ export default function Buy() {
             onChange={setBarcode}
             testID="buy-barcode"
             isBarcode
+            inputRef={barcodeInputRef}
           />
 
           <View style={styles.row}>
@@ -200,7 +211,7 @@ export default function Buy() {
   );
 }
 
-function Field({ label, value, onChange, testID, keyboardType, isBarcode }: { label: string; value: string; onChange: (v: string) => void; testID: string; keyboardType?: 'default' | 'numeric'; isBarcode?: boolean }) {
+function Field({ label, value, onChange, testID, keyboardType, isBarcode, inputRef }: { label: string; value: string; onChange: (v: string) => void; testID: string; keyboardType?: 'default' | 'numeric'; isBarcode?: boolean; inputRef?: React.RefObject<TextInput | null> }) {
   // Marking the barcode input with a data attribute + testID lets the
   // external HID scanner listener recognise it, redirect scanner bursts
   // into it (never into price/quantity/name), and refocus it after each
@@ -208,18 +219,30 @@ function Field({ label, value, onChange, testID, keyboardType, isBarcode }: { la
   const webA11yProps = Platform.OS === 'web' && isBarcode
     ? ({ dataSet: { barcodeInput: '1' } } as any)
     : {};
+
+  // Non-barcode fields get the HID guard: if scanner-speed digits arrive
+  // while this field has focus, the guard reverts the change and streams
+  // the digits into the shared HID buffer instead — so no leak into
+  // price/quantity/name on Android/iOS.
+  //
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const guarded = isBarcode ? null : useHidGuardedChange(value, onChange);
+
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
       <TextInput
+        ref={inputRef as any}
         testID={testID}
         style={styles.input}
         value={value}
-        onChangeText={onChange}
+        onChangeText={guarded ? guarded.onChangeText : onChange}
+        onKeyPress={guarded ? guarded.onKeyPress : undefined}
         keyboardType={keyboardType || 'default'}
         textAlign="right"
         autoCapitalize="none"
         autoCorrect={false}
+        blurOnSubmit={false}
         {...webA11yProps}
       />
     </View>
