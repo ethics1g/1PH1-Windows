@@ -230,10 +230,10 @@ async function createWindow() {
       case 'F7': return goto('/pharmacy-orders');
       case 'F8': return goto('/suppliers');
     }
-    // Ctrl+H → home,  Ctrl+, → settings (matches Menu accelerators)
+    // Ctrl+H → home,  Ctrl+, → desktop settings (matches Menu accelerators)
     if ((input.control || input.meta) && !input.shift && !input.alt) {
       if (input.key.toLowerCase() === 'h') return goto('/home');
-      if (input.key === ',')               return goto('/settings');
+      if (input.key === ',')               return goto('/settings/desktop');
     }
   });
 
@@ -273,7 +273,7 @@ function buildMenu() {
       submenu: [
         { label: 'الرئيسية',   accelerator: 'Ctrl+H', click: nav('/home') },
         { type: 'separator' },
-        { label: 'الإعدادات',   accelerator: 'Ctrl+,', click: nav('/settings') },
+        { label: 'الإعدادات',   accelerator: 'Ctrl+,', click: nav('/settings/desktop') },
         { type: 'separator' },
         { role: 'quit', label: 'خروج' },
       ],

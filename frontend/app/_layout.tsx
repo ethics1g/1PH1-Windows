@@ -105,6 +105,7 @@ export default function RootLayout() {
           <Stack.Screen name="settings/personal" />
           <Stack.Screen name="settings/password" />
           <Stack.Screen name="settings/notifications" />
+          <Stack.Screen name="settings/desktop" />
           <Stack.Screen name="medicines/expired" />
           <Stack.Screen name="accounting/index" />
           <Stack.Screen name="accounting/unlock" />

@@ -5,16 +5,25 @@ import { useRouter } from 'expo-router';
 import ScreenHeader from '../../src/ScreenHeader';
 import { colors } from '../../src/theme';
 import { useAuth } from '../../src/auth';
+import { isDesktop } from '../../src/desktop';
 
 export default function Settings() {
   const router = useRouter();
   const { user, signOut } = useAuth();
+  const onDesktop = isDesktop();
 
   const rows: Array<{ icon: keyof typeof Ionicons.glyphMap; label: string; sub?: string; route?: string; onPress?: () => void; testID: string; danger?: boolean }> = [
     { icon: 'person-circle', label: 'المعلومات الشخصية', sub: 'الاسم والبريد الإلكتروني', route: '/settings/personal', testID: 'row-personal' },
     { icon: 'notifications', label: 'مركز الإشعارات', sub: 'جميع الإشعارات', route: '/notifications', testID: 'row-notif-center' },
     { icon: 'options', label: 'تفضيلات الإشعارات', sub: 'تفعيل/إيقاف أنواع الإشعارات', route: '/settings/notifications', testID: 'row-notif-prefs' },
     { icon: 'key', label: 'تغيير كلمة السر', sub: 'كلمة سر آمنة', route: '/settings/password', testID: 'row-password' },
+    ...(onDesktop ? [{
+      icon: 'desktop-outline' as keyof typeof Ionicons.glyphMap,
+      label: 'إعدادات سطح المكتب (ويندوز)',
+      sub: 'الطابعة الحرارية، رابط الخادم، حول التطبيق',
+      route: '/settings/desktop',
+      testID: 'row-desktop-settings',
+    }] : []),
     { icon: 'log-out-outline', label: 'تسجيل الخروج', route: undefined, onPress: () => {
         Alert.alert('تسجيل الخروج', 'هل تريد تسجيل الخروج؟', [
           { text: 'إلغاء', style: 'cancel' },

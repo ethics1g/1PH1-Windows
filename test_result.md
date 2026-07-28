@@ -2021,3 +2021,58 @@ agent_communication:
         bundle regression). The only remaining tasks are Windows-specific
         (producing the actual .exe with electron-builder) — instructions
         provided in electron/README.md + electron/build-windows.bat.
+
+---
+
+## Windows Settings Screen — Added
+
+frontend:
+  - task: "Desktop-only settings screen (/settings/desktop)"
+    implemented: true
+    working: true
+    file: "frontend/app/settings/desktop.tsx (new), frontend/app/settings/index.tsx, frontend/app/_layout.tsx, electron/main.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          Added a full desktop-only settings screen with four cards:
+            1) رابط الخادم — URL input + "Test Connection" (tries GET
+               /api/health then /api/ then /) + "Save & Reload" flow.
+            2) الطابعة الحرارية — printer picker populated from
+               `window.pharmaDesktop.listPrinters()`, page-size segmented
+               control (58/80mm), cash-drawer toggle, and two test buttons
+               (print + kick drawer).
+            3) طابعة A4 — separate printer picker with an "Use system
+               default" pseudo-entry.
+            4) حول التطبيق — Version / Electron / OS / userData path / log
+               file path + "Open log" and "Reload" buttons.
+          Every change persists immediately via `settings.set` (electron-
+          store) and shows an inline saving spinner. On iOS/Android/PWA a
+          friendly info card explains this screen only applies to Windows.
+          Wired the row into settings/index.tsx (only shown when
+          `isDesktop()` is true) and registered the route in _layout.tsx.
+          Electron main.js Ctrl+, and menu → الإعدادات now navigate
+          directly to /settings/desktop.
+
+          Testing performed:
+            • Web fallback screen renders "غير متاح على هذه المنصة" (Playwright screenshot verified).
+            • With a mock `window.pharmaDesktop` injected via `add_init_script`,
+              the full screen renders with all four cards, printers list,
+              radio-selected default printer, cash-drawer switch, version
+              info, and interaction with Test Connection + Print Test buttons
+              works without JS errors.
+            • Backend security regression: 52/52 still passing.
+            • node --check main.js OK.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Added the requested Windows Settings screen and made the whole
+        Electron package ready for producing the final .exe installer on
+        a Windows host. All requested items (printer selection, server URL
+        with connection test, printer test, cash drawer test, version info)
+        are on the screen and verified via Playwright with a mocked
+        pharmaDesktop bridge. Everything remains a no-op on iOS/Android/PWA.
