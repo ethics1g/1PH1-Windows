@@ -1861,3 +1861,90 @@ agent_communication:
         mapper + 2 endpoints (preview + commit). Reuses batches.create_batch
         so FIFO/expiry/inventory logic unchanged. Frontend screen at
         /orders/excel-import + teal button on /buy.
+
+---
+
+## Security Hardening (P0 + P1) — SEC-001..SEC-004 fixed
+
+backend:
+  - task: "Migrate password hashing from SHA256 to bcrypt with legacy auto-upgrade"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          Fixed SEC-003. `hash_password` now uses bcrypt (12 rounds).
+          `verify_password` accepts both bcrypt and legacy SHA256 hashes.
+          On successful login with a SHA256 stored hash, the stored value is
+          atomically rewritten to a fresh bcrypt hash (`password_scheme=bcrypt`)
+          via `_maybe_upgrade_password()`. Verified end-to-end: admin, pharmacy,
+          supplier logins all work; test_security_fixes.py::TestSEC003 (3/3) pass.
+
+  - task: "Remove hardcoded second admin (SEC-001)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          Removed the hardcoded `07823567874/Rasooll$123` admin seed.
+          Deleted existing DB record. `seed_admin()` now provisions ONE
+          bootstrap admin (`0000000000/admin123` by default) with
+          `must_change_password=True`, overridable via env vars
+          `ADMIN_BOOTSTRAP_PHONE` / `_PASSWORD` / `_EMAIL`. Test
+          TestSEC001::test_no_hardcoded_rasool_admin_credentials_work passes.
+
+  - task: "Stop leaking OTP in JSON response (SEC-002)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          `/api/auth/forgot-password` no longer returns `dev_otp` in the response
+          even when `SMS_PROVIDER=dev`. The OTP is only written to server logs
+          via `_send_sms()`. A documented test-only escape hatch
+          `TEST_MODE_OTP_ECHO=1` (kept in backend/.env for pytest) restores the
+          old behaviour for the automated reset flow tests. TestSEC002 passes;
+          full test_password_reset.py (15/15) passes.
+
+  - task: "Enforce image size limits on Gemini OCR (SEC-004)"
+    implemented: true
+    working: true
+    file: "backend/paper_orders.py, backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          `/api/orders/scan-image` rejects <10 KB (returns 200 with hint) and
+          >10 MB (413) images. `/api/supplier/catalog/upload` enforces a 12 MB
+          hard cap on the base64 payload. TestSEC004 (2/2) passes.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Applied all P0+P1 security audit fixes flagged by security_audit_agent:
+        SEC-001 (hardcoded admin removed), SEC-002 (no OTP in JSON responses),
+        SEC-003 (bcrypt migration with zero-downtime auto-upgrade on login),
+        SEC-004 (image size guards on OCR endpoints). Added
+        tests/test_security_fixes.py (8/8 passing) plus regression suites
+        test_password_reset.py (15/15), test_admin.py (29/29), test_me_password.py,
+        test_accounting_unlock.py, test_auth_terminology_sanity.py — 62/62 total.
+        Frontend login flow verified via browser screenshot; existing SHA256
+        accounts continue to log in and are silently rehashed to bcrypt.

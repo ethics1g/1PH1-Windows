@@ -164,7 +164,7 @@ class TestAdminStats:
 def temp_pharmacy():
     phone = "0779" + uuid.uuid4().hex[:7]
     r = requests.post(f"{API}/pharmacy/register", json={
-        "name": "TEST_pharm_admin", "phone": phone, "password": "pw123456", "address": "TEST"
+        "name": "TEST_pharm_admin", "phone": phone, "password": "pw123456", "address": "TEST", "region": "بغداد"
     }, timeout=15)
     assert r.status_code == 200, r.text
     body = r.json()
@@ -181,7 +181,7 @@ def temp_pharmacy():
 def temp_supplier():
     phone = "0788" + uuid.uuid4().hex[:7]
     r = requests.post(f"{API}/supplier/register", json={
-        "name": "TEST_sup_admin", "phone": phone, "password": "pw123456", "address": "TEST"
+        "name": "TEST_sup_admin", "phone": phone, "password": "pw123456", "address": "TEST", "region": "بغداد"
     }, timeout=15)
     assert r.status_code == 200, r.text
     body = r.json()

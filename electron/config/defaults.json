@@ -1,0 +1,6 @@
+{
+  "_comment": "الإعدادات الافتراضية للمُثبِّت — تُنسخ إلى مجلد بيانات المستخدم عند أول تشغيل.",
+  "frontendUrl": "https://YOUR-APP.emergent.host",
+  "thermalPrinterName": "",
+  "a4PrinterName": ""
+}

@@ -40,7 +40,7 @@ def supplier_token(session):
     # Register a fresh supplier
     phone = f"079{RUN[-7:]}"
     payload = {"name": f"TEST_supplier_{RUN}", "phone": phone,
-               "password": "sup123", "address": "Baghdad"}
+               "password": "sup123", "address": "Baghdad", "region": "بغداد"}
     r = session.post(f"{BASE_URL}/supplier/register", json=payload)
     if r.status_code == 400:  # already exists
         r = session.post(f"{BASE_URL}/supplier/login",
@@ -78,7 +78,7 @@ class TestAuth:
         phone = f"077{RUN[-7:]}"
         r = session.post(f"{BASE_URL}/pharmacy/register",
                          json={"name": f"TEST_pharm_{RUN}", "phone": phone,
-                               "password": "p123", "address": "Baghdad"})
+                               "password": "p123", "address": "Baghdad", "region": "بغداد"})
         assert r.status_code == 200
         assert r.json()["pharmacy"]["phone"] == phone
 

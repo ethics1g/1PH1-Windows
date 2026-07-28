@@ -7,10 +7,12 @@ import re
 import logging
 import uuid
 import hashlib
+import hmac
+import bcrypt
 import jwt
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime, timezone, timedelta
 
 import catalog_import
@@ -25,6 +27,7 @@ db = client[os.environ['DB_NAME']]
 JWT_SECRET = os.environ.get('JWT_SECRET', 'dev-secret')
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 SMS_PROVIDER = os.environ.get('SMS_PROVIDER', 'dev')  # 'dev' | 'twilio'
+BCRYPT_ROUNDS = int(os.environ.get('BCRYPT_ROUNDS', '12'))
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -33,16 +36,70 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
-# ---------- Helpers ----------
-def hash_password(password: str) -> str:
+# ---------- Password Hashing (bcrypt with legacy SHA256 migration) ----------
+def _legacy_sha256(password: str) -> str:
+    """Legacy hash used before bcrypt migration. Kept ONLY for verification."""
     return hashlib.sha256(password.encode()).hexdigest()
 
 
+def _is_bcrypt_hash(stored: str) -> bool:
+    return isinstance(stored, str) and stored.startswith(("$2a$", "$2b$", "$2y$"))
+
+
+def hash_password(password: str) -> str:
+    """Hash a new password with bcrypt (12 rounds by default)."""
+    # bcrypt truncates at 72 bytes silently; enforce a sane upper bound.
+    pw_bytes = (password or "").encode("utf-8")[:72]
+    return bcrypt.hashpw(pw_bytes, bcrypt.gensalt(rounds=BCRYPT_ROUNDS)).decode("utf-8")
+
+
 def verify_password(plain: str, hashed: str) -> bool:
-    """Timing-safe password verification against a sha256 hash."""
+    """Timing-safe password verification supporting bcrypt + legacy SHA256."""
     if not plain or not hashed:
         return False
-    return hash_password(plain) == hashed
+    try:
+        if _is_bcrypt_hash(hashed):
+            return bcrypt.checkpw(plain.encode("utf-8")[:72], hashed.encode("utf-8"))
+        # Legacy SHA256 (hex, 64 chars)
+        return hmac.compare_digest(_legacy_sha256(plain), hashed)
+    except Exception:
+        return False
+
+
+def verify_and_migrate_password(stored_hash: str, plain: str) -> Tuple[bool, Optional[str]]:
+    """Verify a password and, if it was stored using the legacy SHA256 scheme,
+    return an upgraded bcrypt hash so the caller can atomically rewrite it.
+    Returns (ok, upgraded_hash_or_None).
+    """
+    if not plain or not stored_hash:
+        return False, None
+    try:
+        if _is_bcrypt_hash(stored_hash):
+            ok = bcrypt.checkpw(plain.encode("utf-8")[:72], stored_hash.encode("utf-8"))
+            return ok, None
+        if hmac.compare_digest(_legacy_sha256(plain), stored_hash):
+            return True, hash_password(plain)
+        return False, None
+    except Exception:
+        return False, None
+
+
+async def _maybe_upgrade_password(collection, user_id: str, old_hash: str, upgraded_hash: Optional[str]) -> None:
+    """Rewrite a legacy SHA256 password hash to bcrypt on successful login.
+    Uses an atomic conditional update to avoid race conditions."""
+    if not upgraded_hash:
+        return
+    try:
+        await collection.update_one(
+            {"id": user_id, "password": old_hash},
+            {"$set": {
+                "password": upgraded_hash,
+                "password_scheme": "bcrypt",
+                "password_migrated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+    except Exception as e:
+        logger.warning(f"Password upgrade failed for user {user_id}: {e}")
 
 
 def create_token(user_id: str, role: str) -> str:
@@ -294,10 +351,14 @@ async def pharmacy_register(data: PharmacyRegister):
 @api_router.post("/pharmacy/login")
 async def pharmacy_login(data: LoginInput):
     doc = await db.pharmacies.find_one({"phone": data.phone}, {"_id": 0})
-    if not doc or doc["password"] != hash_password(data.password):
+    if not doc:
+        raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
+    ok, upgraded = verify_and_migrate_password(doc.get("password", ""), data.password)
+    if not ok:
         raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
     if doc.get("disabled"):
         raise HTTPException(status_code=403, detail="الحساب معطل")
+    await _maybe_upgrade_password(db.pharmacies, doc["id"], doc["password"], upgraded)
     token = create_token(doc["id"], "pharmacy")
     await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
         "actor": {"id": doc["id"], "role": "pharmacy", "phone": data.phone},
@@ -407,8 +468,17 @@ async def forgot_password(data: ForgotPasswordIn):
             "phone": data.phone, "role": data.role, "action": "otp_requested",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
-        if SMS_PROVIDER == "dev":
-            return {"status": "ok", "dev_otp": otp_plain, "message": "في وضع التطوير، رمز OTP في الاستجابة"}
+        # NOTE: never return OTP in the JSON response. Even in dev, the OTP is
+        # logged server-side by `_send_sms()` (see [SMS-DEV] log line). This
+        # prevents accidental exposure via API logs, browser dev-tools, or
+        # network captures. Fix for SEC-002.
+        #
+        # TEST-ONLY escape hatch: set `TEST_MODE_OTP_ECHO=1` (never in prod)
+        # to have the OTP echoed back. Automated tests use this to drive the
+        # full reset-password flow end-to-end without parsing server logs.
+        if os.environ.get("TEST_MODE_OTP_ECHO") == "1":
+            return {"status": "ok", "dev_otp": otp_plain,
+                    "message": "TEST-MODE ONLY — dev_otp echoed back"}
     return {"status": "ok", "message": "إذا كان الرقم مسجلاً، سيتم إرسال رمز التحقق"}
 
 
@@ -483,7 +553,8 @@ async def reset_password(data: ResetPasswordIn):
     coll = db.pharmacies if payload["role"] == "pharmacy" else db.suppliers
     result = await coll.update_one(
         {"id": payload["sub"]},
-        {"$set": {"password": hash_password(data.new_password)}},
+        {"$set": {"password": hash_password(data.new_password),
+                  "password_scheme": "bcrypt"}},
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="المستخدم غير موجود")
@@ -532,10 +603,14 @@ async def supplier_register(data: SupplierRegister):
 @api_router.post("/supplier/login")
 async def supplier_login(data: LoginInput):
     doc = await db.suppliers.find_one({"phone": data.phone}, {"_id": 0})
-    if not doc or doc["password"] != hash_password(data.password):
+    if not doc:
+        raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
+    ok, upgraded = verify_and_migrate_password(doc.get("password", ""), data.password)
+    if not ok:
         raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
     if doc.get("disabled"):
         raise HTTPException(status_code=403, detail="الحساب معطل")
+    await _maybe_upgrade_password(db.suppliers, doc["id"], doc["password"], upgraded)
     token = create_token(doc["id"], "supplier")
     await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
         "actor": {"id": doc["id"], "role": "supplier", "phone": data.phone},
@@ -650,13 +725,19 @@ async def me_change_password(data: ChangePasswordIn,
     else:
         raise HTTPException(status_code=403, detail="Forbidden")
     doc = await col.find_one({"id": user["sub"]}, {"_id": 0})
-    if not doc or doc.get("password") != hash_password(data.current_password or ""):
+    if not doc:
         raise HTTPException(status_code=401, detail="كلمة السر الحالية غير صحيحة")
-    if doc.get("password") == hash_password(new_pw):
+    ok, _ = verify_and_migrate_password(doc.get("password", ""), data.current_password or "")
+    if not ok:
+        raise HTTPException(status_code=401, detail="كلمة السر الحالية غير صحيحة")
+    # Do NOT allow the new password to equal the current one
+    new_ok, _ = verify_and_migrate_password(doc.get("password", ""), new_pw)
+    if new_ok:
         raise HTTPException(status_code=400,
                             detail="يجب أن تختلف كلمة السر الجديدة عن الحالية")
     await col.update_one({"id": user["sub"]},
-                          {"$set": {"password": hash_password(new_pw)}})
+                          {"$set": {"password": hash_password(new_pw),
+                                    "password_scheme": "bcrypt"}})
     return {"ok": True}
 
 
@@ -679,7 +760,10 @@ async def auth_verify_password(data: VerifyPasswordIn,
         doc = await db.admins.find_one({"id": user["sub"]}, {"_id": 0})
     else:
         doc = None
-    if not doc or doc.get("password") != hash_password(data.password or ""):
+    if not doc:
+        raise HTTPException(status_code=401, detail="رمز غير صحيح")
+    ok, _ = verify_and_migrate_password(doc.get("password", ""), data.password or "")
+    if not ok:
         raise HTTPException(status_code=401, detail="رمز غير صحيح")
     return {"ok": True}
 
@@ -1519,25 +1603,42 @@ async def start_notification_scheduler():
 
 @app.on_event("startup")
 async def seed_admin():
-    """Ensure default admins exist (idempotent)."""
-    SEEDS = [
-        {"email": "admin@system.local", "phone": "0000000000", "password": "admin123"},
-        {"email": "rasool@system.local", "phone": "07823567874", "password": "Rasooll$123"},
-    ]
-    for s in SEEDS:
-        existing = await db.admins.find_one({"phone": s["phone"]}, {"_id": 0})
-        if existing:
-            continue
-        await db.admins.insert_one({
-            "id": str(uuid.uuid4()),
-            "email": s["email"],
-            "phone": s["phone"],
-            "password": hash_password(s["password"]),
-            "must_change_password": True,
-            "disabled": False,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        logger.info(f"Seeded admin: phone={s['phone']}")
+    """Ensure a default admin exists (idempotent).
+
+    Security note (fixes SEC-001):
+    - Only one bootstrap admin is created by default, and it is FORCED to
+      change its password on first login (`must_change_password=True`).
+    - The bootstrap credentials can be overridden via env vars
+      `ADMIN_BOOTSTRAP_PHONE` / `ADMIN_BOOTSTRAP_PASSWORD` so real
+      deployments never rely on the shipped default.
+    - The previous hardcoded second admin (`07823567874`) has been removed.
+    """
+    default_phone = os.environ.get("ADMIN_BOOTSTRAP_PHONE", "0000000000")
+    default_password = os.environ.get("ADMIN_BOOTSTRAP_PASSWORD", "admin123")
+    default_email = os.environ.get("ADMIN_BOOTSTRAP_EMAIL", "admin@system.local")
+
+    existing = await db.admins.find_one({"phone": default_phone}, {"_id": 0})
+    if existing:
+        # Also make sure at least one admin account exists overall.
+        return
+    any_admin = await db.admins.find_one({}, {"_id": 0})
+    if any_admin:
+        # Another admin already exists (e.g. created manually) — don't seed.
+        return
+    await db.admins.insert_one({
+        "id": str(uuid.uuid4()),
+        "email": default_email,
+        "phone": default_phone,
+        "password": hash_password(default_password),
+        "must_change_password": True,
+        "disabled": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    logger.warning(
+        f"Seeded bootstrap admin (phone={default_phone}). "
+        f"MUST change password on first login. "
+        f"Override via ADMIN_BOOTSTRAP_PHONE/PASSWORD env vars."
+    )
 
 
 @app.on_event("startup")
@@ -1690,11 +1791,16 @@ class AdminChangePasswordIn(BaseModel):
 @api_router.post("/admin/login")
 async def admin_login(data: AdminLoginIn):
     doc = await db.admins.find_one({"phone": data.phone}, {"_id": 0})
-    if not doc or doc["password"] != hash_password(data.password):
+    if not doc:
+        await audit("login_failed", actor={"phone": data.phone, "role": "admin"})
+        raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
+    ok, upgraded = verify_and_migrate_password(doc.get("password", ""), data.password)
+    if not ok:
         await audit("login_failed", actor={"phone": data.phone, "role": "admin"})
         raise HTTPException(status_code=401, detail="رقم الهاتف أو الرمز السري غير صحيح")
     if doc.get("disabled"):
         raise HTTPException(status_code=403, detail="الحساب معطل")
+    await _maybe_upgrade_password(db.admins, doc["id"], doc["password"], upgraded)
     token = create_token(doc["id"], "admin")
     await audit("login", actor={"id": doc["id"], "role": "admin", "phone": data.phone})
     return {
@@ -1712,56 +1818,64 @@ async def unified_login(data: LoginInput):
     """
     Unified login that resolves the user's role server-side from the database.
     The role is NEVER taken from the request. Search order: admins -> pharmacies -> suppliers.
+    Bcrypt with automatic migration of legacy SHA256 hashes on success.
     """
-    pwd_hash = hash_password(data.password)
-
     admin = await db.admins.find_one({"phone": data.phone}, {"_id": 0})
-    if admin and admin["password"] == pwd_hash:
-        if admin.get("disabled"):
-            raise HTTPException(status_code=403, detail="الحساب معطل")
-        token = create_token(admin["id"], "admin")
-        await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
-            "actor": {"id": admin["id"], "role": "admin", "phone": data.phone},
-            "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
-        return {
-            "token": token, "role": "admin",
-            "user": {
-                "id": admin["id"], "email": admin.get("email"), "phone": admin["phone"],
-                "must_change_password": bool(admin.get("must_change_password", False)),
-            },
-        }
+    if admin:
+        ok, upgraded = verify_and_migrate_password(admin.get("password", ""), data.password)
+        if ok:
+            if admin.get("disabled"):
+                raise HTTPException(status_code=403, detail="الحساب معطل")
+            await _maybe_upgrade_password(db.admins, admin["id"], admin["password"], upgraded)
+            token = create_token(admin["id"], "admin")
+            await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
+                "actor": {"id": admin["id"], "role": "admin", "phone": data.phone},
+                "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
+            return {
+                "token": token, "role": "admin",
+                "user": {
+                    "id": admin["id"], "email": admin.get("email"), "phone": admin["phone"],
+                    "must_change_password": bool(admin.get("must_change_password", False)),
+                },
+            }
 
     pharmacy = await db.pharmacies.find_one({"phone": data.phone}, {"_id": 0})
-    if pharmacy and pharmacy["password"] == pwd_hash:
-        if pharmacy.get("disabled"):
-            raise HTTPException(status_code=403, detail="الحساب معطل")
-        token = create_token(pharmacy["id"], "pharmacy")
-        await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
-            "actor": {"id": pharmacy["id"], "role": "pharmacy", "phone": data.phone},
-            "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
-        return {
-            "token": token, "role": "pharmacy",
-            "user": {"id": pharmacy["id"], "name": pharmacy["name"], "phone": pharmacy["phone"],
-                     "address": pharmacy.get("address"),
-                     "region": pharmacy.get("region"), "country": pharmacy.get("country")},
-            "must_set_region": not bool(pharmacy.get("region_normalized")),
-        }
+    if pharmacy:
+        ok, upgraded = verify_and_migrate_password(pharmacy.get("password", ""), data.password)
+        if ok:
+            if pharmacy.get("disabled"):
+                raise HTTPException(status_code=403, detail="الحساب معطل")
+            await _maybe_upgrade_password(db.pharmacies, pharmacy["id"], pharmacy["password"], upgraded)
+            token = create_token(pharmacy["id"], "pharmacy")
+            await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
+                "actor": {"id": pharmacy["id"], "role": "pharmacy", "phone": data.phone},
+                "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
+            return {
+                "token": token, "role": "pharmacy",
+                "user": {"id": pharmacy["id"], "name": pharmacy["name"], "phone": pharmacy["phone"],
+                         "address": pharmacy.get("address"),
+                         "region": pharmacy.get("region"), "country": pharmacy.get("country")},
+                "must_set_region": not bool(pharmacy.get("region_normalized")),
+            }
 
     supplier = await db.suppliers.find_one({"phone": data.phone}, {"_id": 0})
-    if supplier and supplier["password"] == pwd_hash:
-        if supplier.get("disabled"):
-            raise HTTPException(status_code=403, detail="الحساب معطل")
-        token = create_token(supplier["id"], "supplier")
-        await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
-            "actor": {"id": supplier["id"], "role": "supplier", "phone": data.phone},
-            "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
-        return {
-            "token": token, "role": "supplier",
-            "user": {"id": supplier["id"], "name": supplier["name"], "phone": supplier["phone"],
-                     "address": supplier.get("address"),
-                     "region": supplier.get("region"), "country": supplier.get("country")},
-            "must_set_region": not bool(supplier.get("region_normalized")),
-        }
+    if supplier:
+        ok, upgraded = verify_and_migrate_password(supplier.get("password", ""), data.password)
+        if ok:
+            if supplier.get("disabled"):
+                raise HTTPException(status_code=403, detail="الحساب معطل")
+            await _maybe_upgrade_password(db.suppliers, supplier["id"], supplier["password"], upgraded)
+            token = create_token(supplier["id"], "supplier")
+            await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login",
+                "actor": {"id": supplier["id"], "role": "supplier", "phone": data.phone},
+                "target": {}, "meta": {}, "timestamp": datetime.now(timezone.utc).isoformat()})
+            return {
+                "token": token, "role": "supplier",
+                "user": {"id": supplier["id"], "name": supplier["name"], "phone": supplier["phone"],
+                         "address": supplier.get("address"),
+                         "region": supplier.get("region"), "country": supplier.get("country")},
+                "must_set_region": not bool(supplier.get("region_normalized")),
+            }
 
     await db.audit_logs.insert_one({"id": str(uuid.uuid4()), "action": "login_failed",
         "actor": {"phone": data.phone}, "target": {}, "meta": {},
@@ -1772,13 +1886,18 @@ async def unified_login(data: LoginInput):
 @api_router.post("/admin/change-password")
 async def admin_change_password(data: AdminChangePasswordIn, user: dict = Depends(require_role("admin"))):
     doc = await db.admins.find_one({"id": user["sub"]}, {"_id": 0})
-    if not doc or doc["password"] != hash_password(data.old_password):
+    if not doc:
+        raise HTTPException(status_code=401, detail="كلمة المرور القديمة غير صحيحة")
+    ok, _ = verify_and_migrate_password(doc.get("password", ""), data.old_password)
+    if not ok:
         raise HTTPException(status_code=401, detail="كلمة المرور القديمة غير صحيحة")
     if len(data.new_password) < 6:
         raise HTTPException(status_code=400, detail="كلمة المرور يجب أن تكون 6 أحرف على الأقل")
     await db.admins.update_one(
         {"id": user["sub"]},
-        {"$set": {"password": hash_password(data.new_password), "must_change_password": False}},
+        {"$set": {"password": hash_password(data.new_password),
+                  "password_scheme": "bcrypt",
+                  "must_change_password": False}},
     )
     await audit("password_change", actor={"id": user["sub"], "role": "admin"})
     return {"status": "ok"}

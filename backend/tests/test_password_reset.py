@@ -44,7 +44,7 @@ def s():
 def fresh_pharmacy(s):
     """Register a fresh pharmacy specifically for this test module."""
     phone = f"0779{uuid.uuid4().int % 10**7:07d}"
-    payload = {"name": "TEST_RESET_PHARM", "phone": phone, "password": "init123", "address": "TEST"}
+    payload = {"name": "TEST_RESET_PHARM", "phone": phone, "password": "init123", "address": "TEST", "region": "بغداد"}
     r = s.post(f"{API}/pharmacy/register", json=payload)
     assert r.status_code == 200, r.text
     yield {"phone": phone, "password": "init123", "id": r.json()["pharmacy"]["id"]}
@@ -57,7 +57,7 @@ def fresh_pharmacy(s):
 @pytest.fixture(scope="module")
 def fresh_supplier(s):
     phone = f"0788{uuid.uuid4().int % 10**7:07d}"
-    payload = {"name": "TEST_RESET_SUPP", "phone": phone, "password": "init123", "address": "TEST"}
+    payload = {"name": "TEST_RESET_SUPP", "phone": phone, "password": "init123", "address": "TEST", "region": "بغداد"}
     r = s.post(f"{API}/supplier/register", json=payload)
     assert r.status_code == 200, r.text
     yield {"phone": phone, "password": "init123", "id": r.json()["supplier"]["id"]}
@@ -127,7 +127,7 @@ class TestVerifyOtp:
         # Use a brand-new pharmacy so we have a clean OTP
         phone = f"0779{uuid.uuid4().int % 10**7:07d}"
         s.post(f"{API}/pharmacy/register",
-               json={"name": "TEST_ATT", "phone": phone, "password": "init123", "address": "T"})
+               json={"name": "TEST_ATT", "phone": phone, "password": "init123", "address": "T", "region": "بغداد"})
         try:
             req = s.post(f"{API}/auth/forgot-password",
                          json={"phone": phone, "role": "pharmacy"})
@@ -160,7 +160,7 @@ class TestVerifyOtp:
     def test_correct_otp_returns_reset_token_and_audit(self, s):
         phone = f"0779{uuid.uuid4().int % 10**7:07d}"
         s.post(f"{API}/pharmacy/register",
-               json={"name": "TEST_OK", "phone": phone, "password": "init123", "address": "T"})
+               json={"name": "TEST_OK", "phone": phone, "password": "init123", "address": "T", "region": "بغداد"})
         try:
             req = s.post(f"{API}/auth/forgot-password",
                          json={"phone": phone, "role": "pharmacy"})
@@ -198,7 +198,7 @@ class TestResetPassword:
     def test_short_password_400(self, s):
         phone = f"0779{uuid.uuid4().int % 10**7:07d}"
         s.post(f"{API}/pharmacy/register",
-               json={"name": "TEST_SP", "phone": phone, "password": "init123", "address": "T"})
+               json={"name": "TEST_SP", "phone": phone, "password": "init123", "address": "T", "region": "بغداد"})
         try:
             tok = self._full_flow_get_token(s, phone, "pharmacy")
             r = s.post(f"{API}/auth/reset-password",
@@ -219,7 +219,7 @@ class TestResetPassword:
         old_pw = "init123"
         new_pw = "newpw456"
         s.post(f"{API}/pharmacy/register",
-               json={"name": "TEST_PHARM_FULL", "phone": phone, "password": old_pw, "address": "T"})
+               json={"name": "TEST_PHARM_FULL", "phone": phone, "password": old_pw, "address": "T", "region": "بغداد"})
         try:
             tok = self._full_flow_get_token(s, phone, "pharmacy")
             r = s.post(f"{API}/auth/reset-password",
@@ -251,7 +251,7 @@ class TestResetPassword:
         old_pw = "init123"
         new_pw = "supnew99"
         s.post(f"{API}/supplier/register",
-               json={"name": "TEST_SUPP_FULL", "phone": phone, "password": old_pw, "address": "T"})
+               json={"name": "TEST_SUPP_FULL", "phone": phone, "password": old_pw, "address": "T", "region": "بغداد"})
         try:
             tok = self._full_flow_get_token(s, phone, "supplier")
             r = s.post(f"{API}/auth/reset-password",
