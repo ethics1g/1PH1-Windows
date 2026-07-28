@@ -1,169 +1,140 @@
-# 1PH1 Pharmacy POS — النسخة المكتبية لـ Windows
+# 1PH1 Pharmacy POS — Windows Desktop (Electron)
 
-هذا مجلد Electron جاهز لتحويل تطبيق **1PH1** إلى تطبيق سطح مكتب Windows احترافي (`.exe` installer + Portable).
-
-يعتمد على النسخة الويب من التطبيق (المنشورة على Emergent). لا حاجة لأي تغيير في الباك-إند (FastAPI + MongoDB يبقيان على Emergent).
-
----
-
-## 🎯 الميزات المضمّنة
-
-- ✅ **نافذة سطح مكتب أصلية** — تبدو كتطبيق Windows حقيقي، لا محاكي Android
-- ✅ **قارئ الباركود USB HID** — يعمل مباشرة (نفس كود React الحالي)
-- ✅ **الطباعة الحرارية ESC/POS** (58mm و 80mm) عبر `electron-pos-printer`
-- ✅ **الطباعة العادية A4** — للفواتير الرسمية
-- ✅ **اختصارات لوحة المفاتيح** المخصّصة لعمل POS:
-  - `F2` بيع  ·  `F3` شراء  ·  `F4` المخزن  ·  `F5` الزبائن  ·  `F6` المحاسبة  ·  `F7` طلباتي  ·  `F8` المذاخر
-  - `Ctrl+H` الرئيسية  ·  `Ctrl+,` الإعدادات
-- ✅ **إعادة التركيز التلقائي** على حقل الباركود عند تفعيل النافذة (مسح متتابع بدون لمس)
-- ✅ **إعدادات محلية دائمة** (اسم الطابعة، رابط الخادم) عبر `electron-store`
-- ✅ **قائمة عربية RTL** كاملة
-- ✅ **مُثبِّت NSIS** بواجهة عربية + إنجليزية + نسخة **Portable** بدون تثبيت
+هذا المجلد يحتوي على مغلف Electron يحوّل تطبيق الويب (Expo) إلى تطبيق ويندوز أصلي مع دعم:
+- ⌨️ اختصارات لوحة المفاتيح الاحترافية (F2 = بيع، F3 = شراء، F4 = مخزن، ...)
+- 🖨️ الطابعات الحرارية (58mm / 80mm ESC/POS)
+- 📄 طابعات A4 القياسية (طباعة صامتة أو بالمعاينة)
+- 💵 فتح درج الكاش (Cash Drawer Kick) عبر أمر ESC/POS
+- 🏷️ ماسحات الباركود USB HID (تعمل تلقائياً — يلتقطها `hidGuard.ts` في الواجهة)
+- ⚙️ إعدادات محفوظة (electron-store) — الطابعة، حجم النافذة، مستوى التكبير
+- 🔄 إعادة اتصال تلقائية بالخادم عند انقطاع الشبكة
+- 📝 ملف سجل دوّار لتشخيص المشاكل
 
 ---
 
-## 🏗️ خطوات بناء الـ `.exe` على جهاز Windows
+## 🛠️ متطلبات البناء (على جهاز ويندوز)
 
-### المتطلبات
-- **Windows 10/11** (64-bit)
-- **Node.js 18+** — من [nodejs.org](https://nodejs.org/)
-- **Git** — من [git-scm.com](https://git-scm.com/)
-- **~2 GB** مساحة فارغة للبناء
+- Windows 10 / 11 (x64)
+- [Node.js 18+](https://nodejs.org/)
+- Yarn: `npm i -g yarn`
 
-### الخطوات
-```bash
-# 1) استنسخ المستودع من GitHub (بعد رفعه من Emergent)
-git clone https://github.com/<اسمك>/pharma-checkout-8.git
-cd pharma-checkout-8/electron
+## 📦 خطوات البناء
 
-# 2) ثبّت الاعتماديات
-npm install
-
-# 3) عدّل رابط الخادم قبل البناء (اختياري — يمكن ضبطه لاحقاً من الإعدادات)
-# افتح main.js وابحث عن PHARMA_FRONTEND_URL أو دع المستخدم يضبطه من التطبيق
-
-# 4) اختبر محلياً قبل البناء
-npm run dev
-
-# 5) ابنِ المُثبِّت (NSIS installer + Portable)
-npm run dist
-
-# 6) ستجد المخرجات في:
-#    electron/dist/1PH1 Pharmacy POS Setup 1.0.0.exe   ← المُثبِّت
-#    electron/dist/1PH1-POS-1.0.0-portable.exe          ← نسخة محمولة
+```powershell
+cd C:\path\to\app\electron
+yarn install
+yarn dist        # ينشئ NSIS installer + Portable exe في مجلد dist\
 ```
 
-بناء نسخة MSI فقط:
-```bash
-npm run dist:msi
-```
+الملفات الناتجة في `dist\`:
+- `1PH1-POS-Setup-1.0.0-x64.exe` — Installer NSIS (الأفضل للنشر النهائي)
+- `1PH1-POS-1.0.0-portable.exe` — نسخة محمولة (بدون تثبيت)
 
-بناء نسخة Portable فقط (بدون تثبيت):
-```bash
-npm run dist:portable
+خيارات إضافية:
+```powershell
+yarn dist:nsis      # NSIS installer فقط
+yarn dist:portable  # Portable exe فقط
+yarn dist:msi       # MSI installer (للنشر عبر Group Policy)
 ```
 
 ---
 
-## 🖨️ ضبط الطابعات (بعد التثبيت)
+## 🚀 التشغيل بدون بناء (Development)
 
-عند أول تشغيل، أدخل الإعدادات (`Ctrl+,`) وأدخل:
-- **رابط الخادم**: مثلاً `https://pharma-checkout-8.emergent.host`
-- **الطابعة الحرارية**: اسمها بالضبط كما يظهر في **Devices and Printers** بـ Windows (مثال: `XP-58C`, `POS-80`)
-- **طابعة A4**: للفواتير الرسمية
-
-القيم تُحفظ في:
+```powershell
+yarn install
+yarn start          # تشغيل مباشر (يفتح نافذة Electron)
+yarn dev            # تشغيل مع DevTools مفتوحة
 ```
-%APPDATA%/pharma-checkout-desktop-settings/config.json
+
+عند التشغيل لأول مرة سيسألك عن رابط الخادم (Frontend URL). أدخل الرابط المنشور — مثلاً:
+```
+https://pharma-checkout-8.emergent.host
 ```
 
 ---
 
-## 🧩 كيف تستدعي الطباعة من داخل React Native code؟
+## ⌨️ اختصارات لوحة المفاتيح
 
-انسخ الملف `electron/src/print-helpers.ts` إلى `frontend/src/desktop.ts` واستعمله في `sell.tsx`:
+| المفتاح | الوظيفة |
+|---------|---------|
+| `F2` | شاشة **البيع** |
+| `F3` | شاشة **الشراء** |
+| `F4` | شاشة **المخزن** |
+| `F5` | شاشة **الزبائن** *(Ctrl+F5 = إعادة تحميل)* |
+| `F6` | شاشة **المحاسبة** |
+| `F7` | **طلباتي** (طلبات الصيدلية من المذاخر) |
+| `F8` | شاشة **المذاخر** |
+| `Ctrl+H` | الصفحة الرئيسية |
+| `Ctrl+,` | الإعدادات |
+| `Ctrl++` / `Ctrl+-` | تكبير / تصغير |
+| `Ctrl+0` | حجم افتراضي |
+| `F11` | ملء الشاشة |
+| `Ctrl+Q` | خروج |
 
-```typescript
-import { isDesktop, printReceipt } from '../src/desktop';
+الاختصارات تعمل داخل نافذة التطبيق فقط ولا تُصادر مفاتيح النظام.
 
-// بعد إتمام عملية بيع
-if (isDesktop()) {
-  await printReceipt({
-    pharmacyName: 'صيدلية 1PH1',
-    invoiceNumber: '00123',
-    items: cart,
-    total,
-    paid: amountPaid,
-    change: amountPaid - total,
-    cashier: user.name,
-  });
+---
+
+## 🖨️ إعداد الطابعة الحرارية
+
+1. ثبّت الطابعة على ويندوز (Devices & Printers → Add Printer).
+2. افتح التطبيق ثم اختر من القائمة: **الطابعة → طباعة صفحة اختبار حرارية**.
+3. إذا لم تُطبع فتح ملف الإعدادات وضع اسم الطابعة **حرفياً** كما يظهر في ويندوز:
+   `%APPDATA%\1PH1 - Pharmacy POS\pharma-checkout-settings.json`
+
+مثال:
+```json
+{
+  "thermalPrinterName": "XP-80C",
+  "thermalPageSize": "80mm",
+  "a4PrinterName": "",
+  "kickCashDrawer": true
 }
 ```
 
-الدالة تعمل فقط داخل تطبيق Windows — على الموبايل والويب العادي تُرجع `false` بلا خطأ.
+- `thermalPageSize`: `"58mm"` أو `"80mm"`
+- `kickCashDrawer: true` يفتح درج الكاش تلقائياً بعد كل فاتورة (إذا كان الدرج موصولاً بمنفذ RJ11/RJ12 في الطابعة).
 
 ---
 
-## 🔐 التوقيع الرقمي (لتجنّب تحذير SmartScreen)
+## 🏷️ ماسحات الباركود USB
 
-Windows يعرض تحذير "Unknown publisher" حتى توقّع الملف. للتوقيع:
-
-1. اشترِ **Code Signing Certificate** من DigiCert / Sectigo / SSL.com (~$100-300/سنة)
-2. أضف إلى `package.json` في قسم `build.win`:
-   ```json
-   "certificateFile": "path/to/cert.pfx",
-   "certificatePassword": "your-password",
-   "signingHashAlgorithms": ["sha256"]
-   ```
-3. أعد تشغيل `npm run dist`
-
-بديل مجاني للاختبار الداخلي: بدون توقيع، سيظهر تحذير عند أول تشغيل — اضغط "More info" → "Run anyway".
+الماسحات USB HID تعمل **تلقائياً** — يلتقطها المستمع العالمي `hidGuard.ts` في الواجهة، ولا يهم أي حقل مفتوح. لا حاجة لإعداد إضافي.
 
 ---
 
-## 🚨 استكشاف الأخطاء
+## 📁 مواقع الملفات على ويندوز
 
-| المشكلة | الحل |
-|--------|------|
-| نافذة فارغة | تأكد من `frontendUrl` في الإعدادات — يجب أن يكون HTTPS |
-| قارئ الباركود لا يعمل | افتح `Ctrl+Shift+I` وتحقق من الـ Console — قد يحتاج تركيز حقل الباركود يدوياً أول مرة |
-| الطابعة الحرارية لا تطبع | تأكد من اسم الطابعة يطابق ما في Windows تماماً (case-sensitive) |
-| ملف .exe كبير جداً | مضغوط بالفعل بأقصى ضغط — طبيعي ~150MB لـ Electron |
-| SmartScreen يمنع التشغيل | وقّع الملف رقمياً أو استخدم "Run anyway" مؤقتاً |
+| المسار | المحتوى |
+|--------|---------|
+| `%APPDATA%\1PH1 - Pharmacy POS\pharma-checkout-settings.json` | إعدادات التطبيق |
+| `%APPDATA%\1PH1 - Pharmacy POS\logs\main.log` | سجل الأخطاء والتشخيص |
+| `%LOCALAPPDATA%\Programs\1PH1 Pharmacy POS\` | مكان التثبيت |
 
----
-
-## 📁 هيكل المجلد
-
-```
-electron/
-├── package.json          ← إعدادات الحزمة + electron-builder
-├── main.js               ← Main process (نافذة + IPC + طباعة + اختصارات)
-├── preload.js            ← جسر آمن للـ renderer
-├── config/
-│   └── defaults.json     ← إعدادات افتراضية
-├── src/
-│   └── print-helpers.ts  ← دوال جاهزة للاستخدام من React Native
-├── assets/
-│   └── icon.ico          ← أيقونة التطبيق (استبدلها بأيقونتك)
-└── README.md             ← هذا الملف
-```
+من داخل التطبيق: **مساعدة → فتح ملف السجل** أو **مساعدة → مجلد الإعدادات**.
 
 ---
 
-## 💡 التالي (اختياري لتحسينات لاحقة)
+## 🔧 استكشاف الأخطاء
 
-- **Auto-update**: أضف `electron-updater` مع Emergent-hosted release feed
-- **Offline mode**: مزامنة IndexedDB مع FastAPI عند الاتصال
-- **Cash drawer**: مكتبة `escpos` تدعم فتح الدرج بأمر ESC
-- **Multi-monitor**: نافذة عرض السعر للزبون على شاشة ثانية
-- **App icon**: استبدل `assets/icon.ico` بأيقونة مخصّصة (256×256 على الأقل)
+**النافذة سوداء عند التشغيل**
+- الخادم غير متاح — راجع `main.log` أو غيّر `frontendUrl`.
+
+**الطابعة الحرارية لا تعمل**
+- تحقق من أن الاسم في `thermalPrinterName` مطابق حرفياً لاسم الطابعة في ويندوز.
+- جرّب: **الطابعة → طباعة صفحة اختبار حرارية** (من القائمة).
+
+**الباركود يظهر داخل حقل السعر**
+- بعد أول تحديث للتطبيق، تأكد أن `hidGuard.ts` نُشر مع الواجهة الجديدة.
+
+**نسخة x32 مطلوبة؟**
+- عدّل `build.win.target[*].arch` في `package.json` إلى `["x64", "ia32"]` قبل `yarn dist`.
 
 ---
 
-## 📞 دعم
+## 🛡️ الأمان
 
-- **مشاكل في الكود**: `support@1ph1.local`
-- **مشاكل النشر على Emergent**: `support@emergent.sh`
-
-**البناء يتم على جهاز Windows فقط — لا يمكن بناء .exe داخل بيئة Linux/Emergent.**
+- `contextIsolation: true` + `nodeIntegration: false` — بيئة Renderer معزولة تماماً.
+- الروابط الخارجية تُفتح في المتصفح الافتراضي، لا داخل نافذة Electron.
+- يُسمح فقط بالانتقال داخل نطاق `frontendUrl` المُكوّن.

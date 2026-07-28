@@ -11,6 +11,7 @@ import MedicineScanner from '../src/MedicineScanner';
 import MedicineAutocomplete from '../src/MedicineAutocomplete';
 import { useExternalScanner } from '../src/externalScanner';
 import { useHidGuardedChange, useHidGuardListener } from '../src/hidGuard';
+import { isDesktop, printReceipt } from '../src/desktop';
 
 type CartItem = { medicine_id: string; name: string; price: number; quantity: number; stock: number };
 
@@ -131,6 +132,22 @@ export default function Sell() {
         body: JSON.stringify(body),
       }, token);
       const outstandingTxt = res.outstanding > 0 ? `\nمتبقي على الزبون: ${res.outstanding.toLocaleString()} د.ع` : '';
+
+      // Auto-print thermal receipt when running inside the Electron desktop
+      // shell (no-op on web/mobile). Non-blocking + non-fatal — if the printer
+      // is unreachable we still surface the sale success alert to the cashier.
+      if (isDesktop()) {
+        printReceipt({
+          pharmacyName: 'صيدلية 1PH1',
+          items: cart.map(c => ({ name: c.name, quantity: c.quantity, price: c.price })),
+          total: res.revenue,
+          paid: paymentType === 'credit' ? (parseFloat(amountPaid) || 0) : res.revenue,
+          change: paymentType === 'credit' ? undefined : 0,
+          invoiceNumber: res.order_id || res.id,
+          footer: paymentType === 'credit' ? 'فاتورة آجل' : 'شكراً لتعاملكم معنا',
+        }).catch(() => { /* already logged */ });
+      }
+
       Alert.alert('تم البيع', `المجموع: ${res.revenue.toLocaleString()} د.ع\nربح: ${res.profit.toLocaleString()} د.ع${outstandingTxt}`);
       setCart([]);
       setCustomerName(''); setCustomerPhone(''); setCustomerNotes(''); setAmountPaid('');

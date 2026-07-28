@@ -7,6 +7,7 @@ import { AuthProvider } from '../src/auth';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ExternalScannerProvider } from '../src/externalScanner';
 import { StatusBar } from 'expo-status-bar';
+import { useDesktopNavigation } from '../src/desktop';
 
 // -------------------------------------------------------------------
 // Emergent-managed Push Notifications — module scope setup (must be
@@ -34,6 +35,10 @@ if (Platform.OS === 'android') {
 
 export default function RootLayout() {
   const router = useRouter();
+
+  // Wire Electron desktop shell (F2/F3/F4/… menu items) → expo-router.
+  // No-op on iOS, Android, and plain web PWA.
+  useDesktopNavigation();
 
   // Push notification tap deep-linking (foreground + killed cold-start)
   useEffect(() => {

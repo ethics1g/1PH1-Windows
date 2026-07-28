@@ -1948,3 +1948,76 @@ agent_communication:
         test_accounting_unlock.py, test_auth_terminology_sanity.py — 62/62 total.
         Frontend login flow verified via browser screenshot; existing SHA256
         accounts continue to log in and are silently rehashed to bcrypt.
+
+---
+
+## Windows Electron Desktop — Hardening & Testing
+
+backend: []
+frontend:
+  - task: "Electron Windows desktop wrapper — production-hardening pass"
+    implemented: true
+    working: true
+    file: "electron/main.js, electron/preload.js, electron/package.json, frontend/src/desktop.ts, frontend/app/_layout.tsx, frontend/app/sell.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          Rewrote `main.js` end-to-end with production-quality behaviour:
+            • Single-instance lock, persisted window bounds/zoom (electron-store).
+            • First-run URL prompt (opens settings JSON in default editor) so
+              cashiers can be brought online without editing source.
+            • loadURL retry with exponential backoff (1s→16s) and a user-facing
+              error dialog only after 5 failed attempts.
+            • Local `before-input-event` handlers for F2..F8, Ctrl+H, Ctrl+,
+              (window-scoped — no global OS-wide key hijacking).
+            • F5 preserves Ctrl+F5 native reload; other F-keys navigate.
+            • Renderer navigation via `desktop-navigate` CustomEvent → wired in
+              frontend `useDesktopNavigation()` (fallback to history.pushState).
+            • Full Arabic RTL menu with printer test-page + cash-drawer kick.
+            • ESC/POS cash-drawer command sent via a tiny receipt job.
+            • Rotating log file at `%APPDATA%/1PH1 - Pharmacy POS/logs/main.log`.
+            • Uncaught exception & unhandled rejection handlers → main.log.
+            • Renderer sandbox: contextIsolation=true, nodeIntegration=false,
+              external links open in default browser, cross-origin navigation
+              blocked.
+          Preload exposes a strongly-typed `window.pharmaDesktop` surface
+          (print, listPrinters, settings, app.info, openExternal, reload).
+          New /app/frontend/src/desktop.ts ports the API into the RN web app
+          and adds `useDesktopNavigation()`, `printReceipt()` and
+          `printA4Invoice()` helpers (safe no-op on iOS/Android/PWA).
+          Wired the desktop navigation hook in app/_layout.tsx and the
+          auto-print thermal receipt in app/sell.tsx checkout success flow.
+          Updated package.json with proper electron-builder targets
+          (nsis + portable + msi, x64, RTL Arabic installer language 1025),
+          added `build-windows.bat` one-shot script and a real 256×256 .ico.
+
+          Testing performed:
+            • node --check main.js && node --check preload.js → OK.
+            • Ran electron under xvfb — window created, frontend URL loaded,
+              Local Storage + settings JSON persisted (winBounds + zoomFactor).
+            • Full backend security regression suite: 52/52 passing.
+            • Frontend login + Sell screen loaded via Playwright with the new
+              desktop.ts import (no bundler errors, no console errors).
+            • hidGuard-based HID scanner path untouched — verified by grep.
+
+          Windows-only steps left to the user (cannot be validated on this
+          Linux ARM64 container):
+            • Run `build-windows.bat` on a Windows 10/11 x64 host to produce
+              `dist\1PH1-POS-Setup-1.0.0-x64.exe` (NSIS) and
+              `dist\1PH1-POS-1.0.0-portable.exe`.
+            • Configure `thermalPrinterName` from Devices & Printers, then
+              run الطابعة → طباعة صفحة اختبار حرارية.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Second batch of work in this session complete: fully hardened the
+        Electron Windows shell. Everything that could be validated on Linux
+        was validated (syntax, xvfb smoke run, IPC bridge wiring, frontend
+        bundle regression). The only remaining tasks are Windows-specific
+        (producing the actual .exe with electron-builder) — instructions
+        provided in electron/README.md + electron/build-windows.bat.

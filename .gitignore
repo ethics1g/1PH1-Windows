@@ -80,3 +80,4 @@ memory/test_credentials.md
 
 # Mobile development
 android-sdk/electron/node_modules/electron/dist/electron
+electron/node_modules/electron/dist/electron

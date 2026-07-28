@@ -1,6 +1,9 @@
 {
-  "_comment": "الإعدادات الافتراضية للمُثبِّت — تُنسخ إلى مجلد بيانات المستخدم عند أول تشغيل.",
-  "frontendUrl": "https://YOUR-APP.emergent.host",
+  "_comment": "Default settings bundled with the installer. On first launch they are merged into %APPDATA%/1PH1 - Pharmacy POS/pharma-checkout-settings.json (electron-store defaults take priority).",
+  "frontendUrl": "",
   "thermalPrinterName": "",
-  "a4PrinterName": ""
+  "thermalPageSize": "80mm",
+  "a4PrinterName": "",
+  "kickCashDrawer": false,
+  "zoomFactor": 1.0
 }
