@@ -81,3 +81,13 @@ memory/test_credentials.md
 # Mobile development
 android-sdk/electron/node_modules/electron/dist/electron
 electron/node_modules/electron/dist/electron
+.env
+.env.*
+*.env
+credentials.json
+*.key
+.credentials
+electron/dist/win-unpacked/1PH1
+Pharmacy
+POS.exe
+Pharma-Checkout-8.zip
