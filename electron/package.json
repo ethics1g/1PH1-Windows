@@ -1,8 +1,8 @@
 {
   "name": "pharma-checkout-desktop",
   "productName": "1PH1 - Pharmacy POS",
-  "version": "1.1.1",
-  "description": "Native Windows desktop wrapper for the 1PH1 pharmacy POS. Automatically routes /api/* requests to the production backend (shared database with the Android APK).",
+  "version": "1.2.0",
+  "description": "Native Windows desktop wrapper for the 1PH1 pharmacy POS. Ships with the Expo web bundle baked into the .exe and talks DIRECTLY to the production backend — no preview URL, no boot-up splash.",
   "author": {
     "name": "1PH1 Team",
     "email": "support@1ph1.local"
@@ -37,7 +37,7 @@
     "files": [
       "main.js",
       "preload.js",
-      "src/**/*",
+      "webapp/**/*",
       "assets/**/*",
       "package.json",
       "!**/*.map",

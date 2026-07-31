@@ -19,7 +19,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity,
   ActivityIndicator, Alert, Switch, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -43,6 +43,8 @@ type AppInfo = {
   arch: string;
   userData: string;
   logFile: string;
+  productionApiUrl?: string;
+  webappDir?: string;
 };
 
 type Settings = {
@@ -271,103 +273,18 @@ export default function DesktopSettings() {
       <ScreenHeader title="إعدادات سطح المكتب" subtitle="Windows / Electron" />
       <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 40 }}>
 
-        {/* ================= 1. Production API URL (database) ================= */}
+        {/* ================= 1. Backend info (read-only) ================= */}
         <SectionCard icon="server-outline" title="خادم الإنتاج (قاعدة البيانات)">
           <Text style={styles.helpText}>
-            هذا هو الرابط الذي تُرسَل إليه جميع طلبات API — يجب أن يكون{'\n'}
-            <Text style={{ fontWeight: '800' }}>نفس الرابط</Text> الذي يستخدمه تطبيق Android لضمان أن كلا الجهازين يقرأان{'\n'}
-            ويكتبان من/إلى نفس قاعدة البيانات.
+            هذا التطبيق مبنيّ كمُغلَّف مستقل — الواجهة كاملة داخل الملف التنفيذي (.exe){'\n'}
+            وكل استدعاءات API تذهب مباشرة إلى خادم الإنتاج المطبوع أدناه، بحيث{'\n'}
+            <Text style={{ fontWeight: '800' }}>ويندوز و Android يستخدمان نفس قاعدة البيانات دائماً</Text> بدون أي إعداد.
           </Text>
-          <Text style={styles.label}>Production API URL</Text>
-          <TextInput
-            testID="input-api-url"
-            style={styles.input}
-            value={apiUrlDraft}
-            onChangeText={setApiUrlDraft}
-            placeholder="https://<your-app>.emergent.host"
-            placeholderTextColor={colors.textMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            textAlign="left"
-          />
-          <View style={styles.rowButtons}>
-            <TouchableOpacity
-              testID="btn-test-api"
-              style={[styles.btn, styles.btnSecondary]}
-              disabled={testingUrl}
-              onPress={testApiConnection}
-            >
-              {testingUrl
-                ? <ActivityIndicator color={colors.indigo} size="small" />
-                : <>
-                    <Ionicons name="pulse" size={16} color={colors.indigo} />
-                    <Text style={styles.btnSecondaryText}>اختبار API</Text>
-                  </>}
-            </TouchableOpacity>
-            <TouchableOpacity
-              testID="btn-save-api-url"
-              style={[styles.btn, styles.btnPrimary, !hasApiUrlChanges && styles.btnDisabled]}
-              disabled={!hasApiUrlChanges || saving === 'productionApiUrl'}
-              onPress={saveApiUrl}
-            >
-              {saving === 'productionApiUrl'
-                ? <ActivityIndicator color="#fff" size="small" />
-                : <>
-                    <Ionicons name="save" size={16} color="#fff" />
-                    <Text style={styles.btnPrimaryText}>حفظ رابط API</Text>
-                  </>}
-            </TouchableOpacity>
-          </View>
-        </SectionCard>
-
-        {/* ================= 2. Frontend URL (UI bundle) ================= */}
-        <SectionCard icon="cloud-outline" title="رابط الواجهة (HTML/JS)">
-          <Text style={styles.helpText}>
-            هذا هو الرابط الذي تُحمَّل منه واجهة التطبيق (HTML و JavaScript).{'\n'}
-            عادةً يكون رابط preview. لا يؤثّر على قاعدة البيانات لأن Electron{'\n'}
-            يعيد توجيه كل طلبات <Text style={{ fontFamily: 'monospace' }}>/api/*</Text> تلقائياً إلى خادم الإنتاج أعلاه.
-          </Text>
-          <Text style={styles.label}>Frontend URL</Text>
-          <TextInput
-            testID="input-frontend-url"
-            style={styles.input}
-            value={urlDraft}
-            onChangeText={setUrlDraft}
-            placeholder="https://<your-app>.preview.emergentagent.com"
-            placeholderTextColor={colors.textMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            textAlign="left"
-          />
-          <View style={styles.rowButtons}>
-            <TouchableOpacity
-              testID="btn-test-connection"
-              style={[styles.btn, styles.btnSecondary]}
-              disabled={testingUrl}
-              onPress={testConnection}
-            >
-              {testingUrl
-                ? <ActivityIndicator color={colors.indigo} size="small" />
-                : <>
-                    <Ionicons name="wifi" size={16} color={colors.indigo} />
-                    <Text style={styles.btnSecondaryText}>اختبار الاتصال</Text>
-                  </>}
-            </TouchableOpacity>
-            <TouchableOpacity
-              testID="btn-save-url"
-              style={[styles.btn, styles.btnPrimary, !hasUrlChanges && styles.btnDisabled]}
-              disabled={!hasUrlChanges || saving === 'frontendUrl'}
-              onPress={saveUrl}
-            >
-              {saving === 'frontendUrl'
-                ? <ActivityIndicator color="#fff" size="small" />
-                : <>
-                    <Ionicons name="save" size={16} color="#fff" />
-                    <Text style={styles.btnPrimaryText}>حفظ الرابط</Text>
-                  </>}
-            </TouchableOpacity>
+          <View style={[styles.statBox, styles.statOk]}>
+            <Ionicons name="lock-closed" size={20} color={colors.primary} />
+            <Text style={[styles.statLabel, { marginTop: 4 }]} numberOfLines={1}>
+              {appInfo?.productionApiUrl || 'https://pharma-checkout-8.emergent.host'}
+            </Text>
           </View>
         </SectionCard>
 
@@ -543,24 +460,21 @@ function RedirectDiagnosticsCard({ api }: { api: any }) {
   const isHealthy = total > 0;
 
   return (
-    <SectionCard icon="git-network-outline" title="تشخيص إعادة التوجيه (Redirect)">
+    <SectionCard icon="git-network-outline" title="مراقبة استدعاءات API">
       <Text style={styles.helpText}>
-        هذا القسم يُظهر أن Windows فعلاً يوجّه طلبات <Text style={{ fontFamily: 'monospace' }}>/api/*</Text> إلى خادم الإنتاج.{'\n'}
-        الرقم أدناه هو عدد الطلبات التي تمّت إعادة توجيهها منذ فتح التطبيق.
+        هذا القسم يُظهر أن كل استدعاءات <Text style={{ fontFamily: 'monospace' }}>/api/*</Text> تذهب مباشرة إلى خادم الإنتاج.{'\n'}
+        الرقم أدناه هو عدد الطلبات المُرصودة منذ فتح التطبيق.
       </Text>
 
       <View style={[styles.statBox, isHealthy ? styles.statOk : styles.statPending]}>
         <Text style={styles.statNumber}>{total}</Text>
         <Text style={styles.statLabel}>
-          {isHealthy ? 'طلب أُعيد توجيهه ✅' : 'لم يتم إعادة توجيه أي طلب بعد'}
+          {isHealthy ? 'طلب API إلى الإنتاج ✅' : 'لم يتم رصد أي طلب بعد'}
         </Text>
       </View>
 
       {rules ? (
-        <>
-          <InfoRow label="من (Preview)"  value={rules.frontendHost || '-'} mono />
-          <InfoRow label="إلى (Production)" value={rules.productionOrigin || '-'} mono />
-        </>
+        <InfoRow label="خادم الإنتاج" value={rules.productionOrigin || '-'} mono />
       ) : null}
 
       {recent.length > 0 ? (
