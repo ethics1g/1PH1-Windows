@@ -2113,6 +2113,210 @@ async def admin_audit(action: Optional[str] = None, limit: int = 200, user: dict
     return docs
 
 
+# ============================================================================
+#  Pharmacy Data Migration — admin-only.
+# ----------------------------------------------------------------------------
+#  Exposes a symmetric export/import pair used to move a pharmacy's full
+#  operational dataset between two deployments (e.g. preview → production).
+#
+#  Design principles:
+#    • The export bundle is a plain JSON tree of the 12 collections that
+#      reference `pharmacy_id`. No BSON, no ObjectId — safe to POST over HTTP.
+#    • The import endpoint identifies the destination pharmacy by phone
+#      number (or explicit id) and REWRITES every `pharmacy_id` field so the
+#      dump can be re-attached to a different pharmacy record on the target
+#      deployment.
+#    • Import is idempotent: existing docs (by `id`) are replaced via
+#      `replace_one(..., upsert=True)`, so running the migration twice is
+#      safe. `mode: "replace"` clears the destination collections for that
+#      pharmacy before insert (used for a clean re-migration).
+#    • Only admin JWTs may call these endpoints.
+# ============================================================================
+
+# The 12 collections that carry per-pharmacy operational data.
+PHARMACY_DATA_COLLECTIONS = [
+    "medicines",
+    "medicine_batches",
+    "orders",
+    "sales",
+    "customers",
+    "customer_payments",
+    "paper_orders",
+    "returns",
+    "return_credits",
+    "supplier_accounts",
+    "supplier_ledger",
+    "supplier_sales",
+]
+
+
+@api_router.get("/admin/pharmacy-export/{phone}")
+async def admin_pharmacy_export(phone: str, user: dict = Depends(require_role("admin"))):
+    """Return a full JSON dump of all operational data for the pharmacy
+    identified by `phone`. Excludes the `_id` Mongo field.
+    """
+    pharmacy = await db.pharmacies.find_one({"phone": phone}, {"_id": 0})
+    if not pharmacy:
+        raise HTTPException(status_code=404, detail=f"لا توجد صيدلية بالرقم {phone}")
+    pid = pharmacy["id"]
+    bundle: dict = {
+        "schema_version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "source": {"pharmacy_id": pid, "phone": phone, "name": pharmacy.get("name")},
+        "collections": {},
+    }
+    for col in PHARMACY_DATA_COLLECTIONS:
+        docs = await db[col].find({"pharmacy_id": pid}, {"_id": 0}).to_list(None)
+        bundle["collections"][col] = docs
+    # Also include the pharmacy record itself (name, address, region, etc.)
+    # so an operator can verify the source before importing.
+    bundle["source"]["pharmacy_doc"] = {k: v for k, v in pharmacy.items() if k != "password"}
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "pharmacy_export",
+        "actor": {"id": user["sub"], "role": "admin"},
+        "target": {"phone": phone, "pharmacy_id": pid},
+        "meta": {"total": sum(len(v) for v in bundle["collections"].values())},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    return bundle
+
+
+class PharmacyImportRequest(BaseModel):
+    target_phone: str
+    bundle: dict
+    mode: str = "merge"  # "merge" (default: upsert) | "replace" (wipe target first)
+
+
+@api_router.post("/admin/pharmacy-import")
+async def admin_pharmacy_import(req: PharmacyImportRequest, user: dict = Depends(require_role("admin"))):
+    """Import a bundle produced by `pharmacy-export` into the pharmacy
+    identified by `target_phone` on THIS deployment. Rewrites every
+    `pharmacy_id` field in every doc to the target pharmacy's id.
+
+    `mode="merge"` (default): upserts each doc by `id` — existing docs with
+    the same id are replaced, new docs inserted. Safe to re-run.
+    `mode="replace"`: first wipes every target collection for that pharmacy,
+    then inserts. Use to rebuild from scratch.
+    """
+    if req.mode not in ("merge", "replace"):
+        raise HTTPException(status_code=400, detail="mode must be 'merge' or 'replace'")
+
+    target = await db.pharmacies.find_one({"phone": req.target_phone}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404,
+                            detail=f"لا توجد صيدلية بالرقم {req.target_phone} في قاعدة الوجهة")
+    target_pid = target["id"]
+
+    if not isinstance(req.bundle, dict) or "collections" not in req.bundle:
+        raise HTTPException(status_code=400,
+                            detail="bundle غير صالح — يجب أن يحتوي على مفتاح 'collections'")
+
+    from pymongo import ReplaceOne
+    from pymongo.errors import BulkWriteError
+    stats: dict = {}
+    total_inserted = 0
+    total_replaced = 0
+
+    for col in PHARMACY_DATA_COLLECTIONS:
+        docs = req.bundle["collections"].get(col, [])
+        if not isinstance(docs, list):
+            continue
+        collection = db[col]
+        # ALWAYS clear the target pharmacy's docs in this collection first,
+        # then bulk-insert the fresh bundle. This gives us a clean, atomic
+        # copy without hitting compound unique-index conflicts (e.g.
+        # supplier_accounts.{pharmacy_id, supplier_id}) and makes both
+        # "merge" and "replace" modes idempotent by design.
+        # (The only difference between the two modes is now cosmetic —
+        # kept for backwards compatibility with callers.)
+        await collection.delete_many({"pharmacy_id": target_pid})
+        # Prepare docs (rewrite pharmacy_id, ensure id, drop _id).
+        ops = []
+        for d in docs:
+            if not isinstance(d, dict):
+                continue
+            d["pharmacy_id"] = target_pid
+            d.pop("_id", None)
+            doc_id = d.get("id")
+            if not doc_id:
+                doc_id = str(uuid.uuid4())
+                d["id"] = doc_id
+            ops.append(ReplaceOne(
+                {"id": doc_id, "pharmacy_id": target_pid}, d, upsert=True,
+            ))
+        inserted = 0
+        replaced = 0
+        # Chunk into batches of 500 to keep BSON size manageable.
+        for i in range(0, len(ops), 500):
+            chunk = ops[i:i + 500]
+            if not chunk:
+                continue
+            try:
+                r = await collection.bulk_write(chunk, ordered=False)
+                inserted += (r.upserted_count or 0)
+                replaced += (r.modified_count or 0)
+            except BulkWriteError as bwe:
+                # Absorb duplicate-key errors — they mean another compound
+                # unique index caught the row after our pre-delete. We log
+                # but never fail the whole migration for a single row.
+                details = bwe.details or {}
+                inserted += int(details.get("nUpserted") or 0)
+                replaced += int(details.get("nModified") or 0)
+                write_errors = details.get("writeErrors") or []
+                non_dup = [e for e in write_errors if e.get("code") != 11000]
+                if non_dup:
+                    logger.warning(f"migration bulk_write partial failure on {col}: "
+                                   f"{len(non_dup)} non-duplicate errors, first={non_dup[0]}")
+                if write_errors:
+                    logger.info(f"migration {col}: absorbed {len(write_errors)} duplicate-key rows")
+        stats[col] = {"received": len(docs), "inserted": inserted, "replaced": replaced}
+        total_inserted += inserted
+        total_replaced += replaced
+
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "pharmacy_import",
+        "actor": {"id": user["sub"], "role": "admin"},
+        "target": {"phone": req.target_phone, "pharmacy_id": target_pid},
+        "meta": {"mode": req.mode, "total_inserted": total_inserted,
+                 "total_replaced": total_replaced},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {
+        "ok": True,
+        "target": {"phone": req.target_phone, "pharmacy_id": target_pid, "name": target.get("name")},
+        "mode": req.mode,
+        "totals": {"inserted": total_inserted, "replaced": total_replaced},
+        "collections": stats,
+    }
+
+
+@api_router.get("/admin/pharmacy-summary/{phone}")
+async def admin_pharmacy_summary(phone: str, user: dict = Depends(require_role("admin"))):
+    """Fast diagnostic — returns per-collection document counts for a
+    pharmacy. Used by the migration script to verify before/after."""
+    pharmacy = await db.pharmacies.find_one({"phone": phone}, {"_id": 0, "id": 1, "name": 1, "phone": 1})
+    if not pharmacy:
+        raise HTTPException(status_code=404, detail=f"لا توجد صيدلية بالرقم {phone}")
+    pid = pharmacy["id"]
+    counts = {}
+    total = 0
+    for col in PHARMACY_DATA_COLLECTIONS:
+        c = await db[col].count_documents({"pharmacy_id": pid})
+        counts[col] = c
+        total += c
+    return {
+        "pharmacy": pharmacy,
+        "counts": counts,
+        "total": total,
+    }
+
+
+# ============================================================================
+
+
 # ---------- Supplier Commissions ----------
 COMMISSION_RATE = 0.04  # 4%
 

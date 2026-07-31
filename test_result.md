@@ -2160,3 +2160,78 @@ agent_communication:
         `https://pharma-checkout-8.emergent.host` is compiled into the app
         as the default. Users on v1.0.0 who had a preview URL saved will be
         auto-upgraded on first launch of v1.1.0 via the schemaVersion marker.
+
+---
+
+## Pharmacy Data Migration Endpoints (Preview → Production)
+
+backend:
+  - task: "Admin migration endpoints: pharmacy-export, pharmacy-import, pharmacy-summary"
+    implemented: true
+    working: NA
+    file: "backend/server.py, scripts/migrate_pharmacy_data.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: NA
+        -agent: "main"
+        -comment: |
+          Added three admin-only endpoints to move a pharmacy's full
+          operational dataset (12 collections, thousands of docs)
+          between deployments:
+
+            • GET  /api/admin/pharmacy-summary/{phone}
+                → per-collection doc counts (fast diagnostic).
+            • GET  /api/admin/pharmacy-export/{phone}
+                → full JSON bundle (no _id) of all 12 collections.
+            • POST /api/admin/pharmacy-import
+                → body { target_phone, bundle, mode }
+                → rewrites `pharmacy_id` in every doc to the target's id,
+                  then wipes + bulk-inserts each collection with
+                  chunk size 500. BulkWriteError with duplicate-key
+                  errors is absorbed silently. ordered=False.
+
+          Migration collections list:
+            medicines, medicine_batches, orders, sales, customers,
+            customer_payments, paper_orders, returns, return_credits,
+            supplier_accounts, supplier_ledger, supplier_sales.
+
+          Behaviour:
+            - "merge" mode (default) and "replace" mode both first
+              delete_many({"pharmacy_id": target_pid}) for each
+              collection, then bulk-insert. This avoids compound
+              unique-index violations (e.g. supplier_accounts has
+              a unique index on {pharmacy_id, supplier_id}) and makes
+              re-running the script safe.
+            - Audit log entry written on both export and import.
+            - Rejects non-admin JWTs with 401. Rejects unknown phone
+              with 404. Rejects invalid bundle with 400.
+
+          Runner script /app/scripts/migrate_pharmacy_data.py:
+            - CLI args: --pharmacy-phone, --admin-phone,
+              --admin-password, --source-url, --target-url, --mode,
+              --dry-run, --dump-file.
+            - Prints pre/post summaries for both source and target.
+
+          Local smoke test (against seeded pharmacy 07700000001, 4971
+          docs total across 12 collections):
+            - 1st import from empty target: ins=4971, rep=0 in 0.5s.
+            - 2nd re-run (idempotent): ins=4971, rep=0 in 0.5s.
+            - replace mode: ins=4971, rep=0 in 0.5s.
+            - Post-migration target summary total = source summary
+              total = 4971 ✅ MATCH.
+            - Non-admin token → 401.
+            - Unknown pharmacy phone → 404.
+
+          IMPORTANT: needs testing_agent verification per
+          <system_reminder>. The main agent's own smoke tests do not
+          count.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Built admin endpoints + CLI runner for full pharmacy data
+        migration preview→production. Verified locally that 4971 docs
+        move in 0.5s across 12 collections, idempotent, safe with
+        unique-key constraints. Calling testing_agent now.

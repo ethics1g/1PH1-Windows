@@ -1,0 +1,31 @@
+{
+  "summary": "Backend-only testing of the three new pharmacy data-migration admin endpoints (pharmacy-summary, pharmacy-export, pharmacy-import) plus regression on pharmacy login & /api/medicines. All 16 pytest cases passed against http://localhost:8001. Verified 4971-doc source pharmacy (07700000001) exports without _id/password leakage, imports into a freshly registered target pharmacy (07999999900) in both merge & replace modes, is idempotent on re-run, and rejects invalid mode / invalid bundle / unknown target phone. Auth guards return 401 on missing token and 403 on non-admin token. Post-test cleanup deleted the target pharmacy and its 12 migrated collections; source seed untouched (still 4971 docs).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pharmacy_migration.py",
+    "/app/test_reports/pytest/pytest_pharmacy_migration.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py has grown to 3066 lines — recommend splitting migration/admin endpoints into a dedicated module (e.g. backend/admin_migration.py) to keep files <700 lines.",
+    "PharmacyImportRequest.mode is validated manually via raise HTTPException(400). Consider using Literal['merge','replace'] in the Pydantic model so FastAPI returns a proper 422 with field-level detail (currently returns 400 — acceptable, and the test allows both)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pharmacy_migration.py (new)"
+  ],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "N/A"},
+  "seed_data_creation": "Registered a temporary target pharmacy 07999999900 (name MIG_TARGET, password migtest) for the import round-trip; auto-deleted in fixture teardown along with all 12 migrated collections. Confirmed post-run: login for that phone now returns 401.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Migration endpoints live at server.py lines 2137-2314. Tests are self-cleaning and safe to re-run (they wipe the target pharmacy 07999999900 on teardown via replace-mode import + direct Mongo delete). BASE_URL is taken from BACKEND_TEST_URL env var (defaulting to http://localhost:8001) — pass EXPO_PUBLIC_BACKEND_URL for external validation.",
+  "rca_of_issue": "N/A — no bugs found. Both merge and replace modes are effectively identical (both delete_many then bulk upsert) per code comment at server.py:2226-2232, and this behavior is intentional & documented. Idempotency is proven: second run yields same target total (4971) as source."
+}
