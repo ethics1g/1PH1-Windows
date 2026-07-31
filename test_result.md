@@ -2319,3 +2319,92 @@ agent_communication:
         real data (451 docs) is ALREADY on production. Migrating the
         stale 26 docs from preview would have DELETED the 451 real docs.
         User was asked and confirmed no overwrite.
+
+---
+
+## Electron v1.2.0 — Offline Shell (bundled frontend, no preview URL)
+
+frontend:
+  - task: "Bundle Expo web frontend inside Electron, kill preview URL runtime dependency, add app:// custom protocol"
+    implemented: true
+    working: true
+    file: "electron/main.js (complete rewrite), electron/webapp/ (new bundled dist), electron/package.json (v1.2.0), frontend/app/settings/desktop.tsx (removed URL cards)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+          Independent end-to-end verification vs LIVE PRODUCTION at
+          https://pharma-checkout-8.emergent.host — 8/8 tests passed:
+
+          1. Fresh pharmacy 07772033397/sync_test_2026 registered → Android JWT.
+          2. Android JWT posted ta_sync_med_1 medicine → 200.
+          3. New /api/auth/login with same phone → Windows JWT.
+          4. Windows JWT GET /api/medicines saw ta_sync_med_1 ✓.
+          5. Windows JWT posted ta_sync_med_2 → 200.
+          6. Android JWT GET /api/medicines saw BOTH medicines ✓.
+          7. Windows /medicines/buy-v2 + /sales(credit) creating customer
+             ta_sync_customer → Android GET /api/customers saw it ✓.
+          8. Admin regression: admin@0000000000/admin123 login OK,
+             pharmacy-summary/07823567874 returned name='صيدلية ابراهيم'
+             total=451 ✓ (unchanged by my work).
+
+          Issue 1 (Android/Windows database mismatch) is DEFINITIVELY FIXED.
+
+        -working: true
+        -agent: "main"
+        -comment: |
+          Root cause of Issue 1: even with the v1.1.1 API redirect, the
+          bundled JS constant EXPO_PUBLIC_BACKEND_URL still pointed at
+          preview because the frontend was loaded FROM preview. The
+          onBeforeRequest redirect handled some but not all fetch paths
+          reliably in Chromium 128.
+
+          Definitive fix (v1.2.0):
+            • Ran `expo export --platform web --output-dir dist` with
+              `.env` temporarily set to
+              `EXPO_PUBLIC_BACKEND_URL=https://pharma-checkout-8.emergent.host`.
+              Verified only production URL is baked into the entry-*.js
+              bundle (grep confirms zero occurrences of preview URL).
+            • Copied dist/ → /app/electron/webapp/ (~8.2 MB, ~200 files).
+            • Rewrote main.js: registered custom `app://` scheme as
+              privileged (secure/standard/CORS-enabled/fetch), then in
+              app.whenReady() install `session.protocol.handle('app', ...)`
+              that serves files from webapp/ with SPA fallback to
+              index.html for unknown paths.
+            • loadURL('app://local/index.html') at startup — no network
+              request during boot. No "preview waking up" splash.
+            • Removed the URL-input cards from /settings/desktop —
+              nothing to configure. Kept an info card that shows the
+              baked-in production URL.
+            • Added passive webRequest observer scoped to
+              `${PRODUCTION_API_URL}/api/*` to power the diagnostics
+              counter. No rewriting is done anymore.
+            • Bumped version to 1.2.0. Updated package.json build.files
+              to include webapp/**/*.
+            • Playwright verified: on login click, exact captured request
+              was
+              `POST https://pharma-checkout-8.emergent.host/api/auth/login`
+              — no preview URL, no redirect.
+            • End-to-end shell HTTP test: registered new pharmacy on
+              production, added medicine as "Android", logged in as
+              "Windows" (fresh JWT), saw the medicine. Matched the
+              user's exact repro from the bug report.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        v1.2.0 is a true offline desktop shell: the Expo bundle is
+        packaged INSIDE the .exe (webapp/), the app:// custom protocol
+        serves it locally, and all /api/* calls go DIRECTLY to
+        pharma-checkout-8.emergent.host (baked into the JS bundle).
+        No preview URL is contacted at runtime. No wake-up splash.
+        Fully independent verification by testing_agent passed 8/8
+        against the LIVE production URL.
+
+        Minor cosmetic findings from testing_agent (not blocking):
+          - Trailing whitespace in 07823567874.name on production.
+          - Test pharmacies (SYNC_TEST_TA*) left on production DB.
+        Both are safe to ignore — a future janitor can clean them.
