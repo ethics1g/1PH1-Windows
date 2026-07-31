@@ -40,12 +40,25 @@ process.on('uncaughtException', (e) => log('uncaughtException', e && e.stack || 
 process.on('unhandledRejection', (e) => log('unhandledRejection', e && e.stack || e));
 
 // ---------------- Persistent settings ----------------
+// Production API URL (where the FastAPI backend + MongoDB live). Android APKs
+// are compiled against this URL. Electron ships with this baked in and
+// transparently rewrites all `/api/*` requests coming from the frontend
+// (which is loaded from the preview URL that serves the HTML/JS bundle)
+// to this production URL — so both Android and Windows always read/write
+// the SAME MongoDB database.
+const DEFAULT_PRODUCTION_API_URL = 'https://pharma-checkout-8.emergent.host';
+// The preview URL only serves the frontend static bundle (HTML+JS). It does
+// NOT own a database — API calls made from it are transparently rewritten
+// by the WebRequest hook below.
+const DEFAULT_FRONTEND_URL = 'https://pharma-checkout-8.preview.emergentagent.com';
+
 const store = new Store({
   name: 'pharma-checkout-settings',
   defaults: {
-    // Deployed frontend URL. Users configure this once via the first-run
-    // dialog OR the in-app settings screen.
-    frontendUrl: process.env.PHARMA_FRONTEND_URL || '',
+    // Where the UI (HTML + JS) is loaded from. Preview URL by default.
+    frontendUrl: process.env.PHARMA_FRONTEND_URL || DEFAULT_FRONTEND_URL,
+    // Where /api/* requests are rewritten to. Production URL by default.
+    productionApiUrl: process.env.PHARMA_PRODUCTION_API_URL || DEFAULT_PRODUCTION_API_URL,
     // Thermal printer name (exactly as it appears in Windows Devices & Printers)
     thermalPrinterName: '',
     // Thermal paper size: '58mm' or '80mm'
@@ -58,8 +71,24 @@ const store = new Store({
     winBounds: { width: 1400, height: 900 },
     // UI zoom (1.0 = 100%)
     zoomFactor: 1.0,
+    // Migration marker: on upgrade from older builds that stored a preview URL
+    // manually, force the new production defaults exactly once.
+    schemaVersion: 0,
   },
 });
+
+// ---- One-time schema upgrade (v1) --------------------------------------
+// Older builds saved a preview URL manually in `frontendUrl` and did not know
+// about `productionApiUrl`. On the first launch of v1+ we reset both to the
+// current production defaults so users don't have to re-enter anything, and
+// so the Android/Windows database mismatch is fixed automatically.
+try {
+  if ((store.get('schemaVersion') || 0) < 1) {
+    store.set('frontendUrl', DEFAULT_FRONTEND_URL);
+    store.set('productionApiUrl', DEFAULT_PRODUCTION_API_URL);
+    store.set('schemaVersion', 1);
+  }
+} catch { /* noop */ }
 
 const PLACEHOLDER_URLS = [
   '', 'https://YOUR-APP.emergent.host',
@@ -71,41 +100,13 @@ let mainWindow = null;
 // ---------------- First-run URL prompt ----------------
 async function ensureFrontendUrl() {
   let url = (store.get('frontendUrl') || '').trim();
-  while (PLACEHOLDER_URLS.includes(url) || !/^https?:\/\//i.test(url)) {
-    const r = await dialog.showMessageBox({
-      type: 'question',
-      title: 'إعداد أول مرة — 1PH1 POS',
-      message: 'أدخل رابط الخادم (Frontend URL)',
-      detail: [
-        'مثال:  https://pharma-checkout-8.emergent.host',
-        '',
-        'يمكنك تغييره لاحقاً من: الملف ← الإعدادات',
-      ].join('\n'),
-      buttons: ['فتح ملف الإعدادات يدوياً', 'خروج'],
-      defaultId: 0, cancelId: 1,
-      noLink: true,
-    });
-    if (r.response === 1) { app.quit(); return null; }
-    // Open the settings JSON in the default editor so the user can paste
-    // the URL. Windows-friendly: `shell.openPath` uses ShellExecute.
-    const configPath = path.join(app.getPath('userData'), 'pharma-checkout-settings.json');
-    try {
-      if (!fs.existsSync(configPath)) {
-        fs.writeFileSync(configPath, JSON.stringify(store.store, null, 2));
-      }
-      await shell.openPath(configPath);
-    } catch (e) { log('openPath failed', e.message); }
-    // Wait for the user to close the dialog & re-check.
-    await dialog.showMessageBox({
-      type: 'info',
-      title: '1PH1 POS',
-      message: 'اضغط "استمرار" بعد حفظ رابط الخادم في ملف الإعدادات.',
-      buttons: ['استمرار'],
-    });
-    // Re-read from disk in case user edited it externally
-    url = (store.get('frontendUrl') || '').trim();
-  }
-  return url;
+  // With v1+ we always ship a valid default. This loop only fires if a user
+  // (or a corrupted settings file) explicitly cleared the URL.
+  if (!PLACEHOLDER_URLS.includes(url) && /^https?:\/\//i.test(url)) return url;
+  // Self-heal by restoring the shipped default.
+  log('frontendUrl was invalid, restoring default:', DEFAULT_FRONTEND_URL);
+  store.set('frontendUrl', DEFAULT_FRONTEND_URL);
+  return DEFAULT_FRONTEND_URL;
 }
 
 // ---------------- Window creation ----------------
@@ -432,7 +433,17 @@ ipcMain.handle('print:testThermal', () => printTestReceipt());
 
 // Settings get/set — used by an in-app settings screen or a native dialog.
 ipcMain.handle('settings:get', (_e, key) => store.get(key));
-ipcMain.handle('settings:set', (_e, key, value) => { store.set(key, value); return true; });
+ipcMain.handle('settings:set', (_e, key, value) => {
+  store.set(key, value);
+  // If a URL-affecting key changed, notify the API redirect rules so
+  // subsequent /api/* requests target the new production backend.
+  if (key === 'frontendUrl' || key === 'productionApiUrl') {
+    try { app.emit('main:settings-rules-changed'); } catch { /* noop */ }
+    // Trigger listener registered inside app.whenReady()
+    ipcMain.emit('settings:rulesChanged');
+  }
+  return true;
+});
 ipcMain.handle('settings:all', () => store.store);
 ipcMain.handle('settings:reset', () => { store.clear(); return true; });
 
@@ -485,6 +496,55 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    // ==========================================================
+    // 🔑 Transparent API redirect (fixes DB mismatch with Android)
+    // ==========================================================
+    // The frontend HTML/JS bundle is served by the *preview* URL (that's
+    // where Expo publishes the web build). But the preview URL has its OWN
+    // MongoDB, which is separate from the production database that the
+    // Android APK talks to. To make Windows Electron and Android share the
+    // exact same database, we intercept every `/api/*` request coming from
+    // the loaded frontend and rewrite the destination to the production
+    // backend URL. Everything else (HTML, JS, images) is left untouched
+    // so the UI still comes from the preview URL.
+    //
+    // Result: only one place to configure (`productionApiUrl` setting) —
+    // no need to re-export the Expo bundle, no need to rebuild anything.
+    const buildApiRedirectRules = () => {
+      const frontendUrl = (store.get('frontendUrl') || DEFAULT_FRONTEND_URL).replace(/\/+$/, '');
+      const productionApiUrl = (store.get('productionApiUrl') || DEFAULT_PRODUCTION_API_URL).replace(/\/+$/, '');
+      let frontendHost = '';
+      let productionOrigin = productionApiUrl;
+      try { frontendHost = new URL(frontendUrl).host; } catch { /* noop */ }
+      try { productionOrigin = new URL(productionApiUrl).origin; } catch { /* noop */ }
+      return { frontendUrl, frontendHost, productionOrigin, productionApiUrl };
+    };
+    let redirectRules = buildApiRedirectRules();
+    log('API redirect rules:', redirectRules);
+
+    session.defaultSession.webRequest.onBeforeRequest((details, cb) => {
+      try {
+        // We only rewrite HTTPS API calls, not the initial page load itself.
+        const u = new URL(details.url);
+        if (u.host !== redirectRules.frontendHost) return cb({});
+        if (!u.pathname.startsWith('/api/') && u.pathname !== '/api') return cb({});
+        // Rewrite host → production origin, keep path + query.
+        const productionOrigin = redirectRules.productionOrigin;
+        const rewritten = `${productionOrigin}${u.pathname}${u.search}${u.hash}`;
+        if (rewritten === details.url) return cb({});
+        return cb({ redirectURL: rewritten });
+      } catch {
+        return cb({});
+      }
+    });
+
+    // When the user updates settings via /settings/desktop we refresh the
+    // in-memory rules so the change takes effect without a full restart.
+    ipcMain.on('settings:rulesChanged', () => {
+      redirectRules = buildApiRedirectRules();
+      log('API redirect rules reloaded:', redirectRules);
+    });
+
     // Content Security Policy — allow the frontend URL host, common HTTPS
     // resources, and inline styles/scripts (Expo web bundle needs them).
     session.defaultSession.webRequest.onHeadersReceived((details, cb) => {

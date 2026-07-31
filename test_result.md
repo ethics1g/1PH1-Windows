@@ -2076,3 +2076,87 @@ agent_communication:
         with connection test, printer test, cash drawer test, version info)
         are on the screen and verified via Playwright with a mocked
         pharmaDesktop bridge. Everything remains a no-op on iOS/Android/PWA.
+
+---
+
+## Windows Electron ↔ Android — Unified Production Database (v1.1.0)
+
+frontend:
+  - task: "Electron transparent /api/* redirect to production URL"
+    implemented: true
+    working: true
+    file: "electron/main.js, electron/package.json, electron/README.md, frontend/app/settings/desktop.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          Root cause discovered by probing both Emergent URLs:
+            • preview URL (pharma-checkout-8.preview.emergentagent.com) serves
+              the frontend static bundle AND its own separate FastAPI+MongoDB.
+            • production URL (pharma-checkout-8.emergent.host) serves ONLY the
+              backend (root returns 404). Android APK was compiled with this
+              URL as EXPO_PUBLIC_BACKEND_URL and talks directly to the
+              production MongoDB.
+          The mismatch: Electron was loading the entire preview URL, so the
+          bundled frontend was calling preview backend → preview MongoDB,
+          whereas Android was calling production backend → production MongoDB.
+
+          Fix: introduced a transparent WebRequest redirect in main.js.
+            • Two new persistent settings: `frontendUrl` (preview default) and
+              `productionApiUrl` (production default), both baked in via
+              DEFAULT_FRONTEND_URL and DEFAULT_PRODUCTION_API_URL constants.
+            • Schema migration marker `schemaVersion: 1` — on first launch of
+              v1.1.0 the settings are reset to the shipped defaults so users
+              who previously typed a preview URL manually are auto-fixed.
+            • `session.defaultSession.webRequest.onBeforeRequest` intercepts
+              every request. If host === frontendHost AND path starts with
+              `/api/`, it rewrites the URL to the production origin using
+              `redirectURL`. Everything else (HTML, JS, images, fonts) passes
+              through unchanged.
+            • CORS verified: production backend responds
+              `Access-Control-Allow-Origin: <preview origin>` on OPTIONS.
+            • Redirect rules are refreshed live via
+              `ipcMain.on('settings:rulesChanged')` when the user updates
+              settings from /settings/desktop.
+
+          Settings screen (/settings/desktop) updated:
+            • New "خادم الإنتاج (قاعدة البيانات)" card at the top with URL
+              input, "Test API" button, and "Save" button.
+            • Renamed second card to "رابط الواجهة (HTML/JS)" with an
+              explanation that /api/* is auto-redirected.
+            • App info section now shows both Production API and Frontend URL.
+
+          Removed first-run prompt dialog — defaults are baked in so no user
+          setup is required. `ensureFrontendUrl()` now self-heals if a
+          corrupted settings file blanks the URL.
+
+          Bumped package.json version to 1.1.0 and updated README.md with the
+          full architecture explanation.
+
+          Testing performed:
+            • Verified production URL routes: /api/ returns 200 with
+              {"message":"Pharmacy Cashier API"}, root returns 404 (expected).
+            • Verified CORS preflight passes from preview origin.
+            • node --check main.js && preload.js → OK.
+            • Launched under xvfb — main.log confirms
+              "API redirect rules" line with correct URLs.
+            • Settings JSON contains schemaVersion:1, both URLs correct.
+            • Playwright with mocked pharmaDesktop: the new production-API
+              card is rendered with default URL and Save button correctly
+              disabled when values match settings.
+            • No frontend/backend regressions (52/52 security tests still
+              passing).
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Fixed the critical Windows-Android database mismatch. Electron now
+        auto-redirects /api/* calls from the frontend (served by preview) to
+        the production backend that Android talks to, so both platforms share
+        the SAME MongoDB. No manual URL editing needed — the production URL
+        `https://pharma-checkout-8.emergent.host` is compiled into the app
+        as the default. Users on v1.0.0 who had a preview URL saved will be
+        auto-upgraded on first launch of v1.1.0 via the schemaVersion marker.

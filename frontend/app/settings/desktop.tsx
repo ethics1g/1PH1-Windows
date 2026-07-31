@@ -47,6 +47,7 @@ type AppInfo = {
 
 type Settings = {
   frontendUrl: string;
+  productionApiUrl: string;
   thermalPrinterName: string;
   thermalPageSize: '58mm' | '80mm';
   a4PrinterName: string;
@@ -56,6 +57,7 @@ type Settings = {
 
 const DEFAULT_SETTINGS: Settings = {
   frontendUrl: '',
+  productionApiUrl: '',
   thermalPrinterName: '',
   thermalPageSize: '80mm',
   a4PrinterName: '',
@@ -75,6 +77,7 @@ export default function DesktopSettings() {
 
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [urlDraft, setUrlDraft] = useState('');
+  const [apiUrlDraft, setApiUrlDraft] = useState('');
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
 
@@ -91,6 +94,7 @@ export default function DesktopSettings() {
         const merged = { ...DEFAULT_SETTINGS, ...(all || {}) } as Settings;
         setSettings(merged);
         setUrlDraft(merged.frontendUrl || '');
+        setApiUrlDraft(merged.productionApiUrl || '');
         setPrinters(Array.isArray(list) ? list : []);
         setAppInfo(info || null);
       } catch (e: any) {
@@ -130,15 +134,38 @@ export default function DesktopSettings() {
     }
   };
 
-  const testConnection = async () => {
-    const url = urlDraft.trim().replace(/\/+$/, '');
-    if (!/^https?:\/\//i.test(url)) {
+  const saveApiUrl = async () => {
+    const clean = apiUrlDraft.trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(clean)) {
+      Alert.alert('رابط غير صالح', 'يجب أن يبدأ الرابط بـ https:// أو http://');
+      return;
+    }
+    await persist('productionApiUrl', clean);
+    setApiUrlDraft(clean);
+    if (api?.app?.reload) {
+      Alert.alert(
+        'تم الحفظ',
+        'رابط API الجديد سيُستخدم في الطلبات القادمة. أعد التحميل لضمان تطبيقه فوراً.',
+        [
+          { text: 'لاحقاً', style: 'cancel' },
+          { text: 'إعادة التحميل الآن', onPress: () => api.app.reload().catch(() => {}) },
+        ],
+      );
+    }
+  };
+
+  const testUrl = async (url: string, kind: 'frontend' | 'api') => {
+    const clean = url.trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(clean)) {
       Alert.alert('رابط غير صالح', 'أدخل رابطاً يبدأ بـ https:// أو http://');
       return;
     }
     setTestingUrl(true);
-    // Try /api/health then /api/ then /
-    const candidates = [`${url}/api/health`, `${url}/api/`, `${url}/`];
+    // For API URL test we hit /api/ directly. For frontend URL we try /,
+    // /api/, and /api/health so preview URLs (which serve UI + API) still pass.
+    const candidates = kind === 'api'
+      ? [`${clean}/api/`, `${clean}/api/health`]
+      : [`${clean}/api/health`, `${clean}/api/`, `${clean}/`];
     let ok = false; let status = 0; let sample = '';
     for (const target of candidates) {
       try {
@@ -147,9 +174,8 @@ export default function DesktopSettings() {
         const r = await fetch(target, { method: 'GET', signal: ac.signal });
         clearTimeout(t);
         status = r.status;
-        // 200-399 counts as reachable; 404 also counts since it proves DNS/TCP works.
         if (r.status < 500) {
-          try { sample = (await r.text()).slice(0, 60); } catch { /* noop */ }
+          try { sample = (await r.text()).slice(0, 80); } catch { /* noop */ }
           ok = true;
           break;
         }
@@ -164,6 +190,9 @@ export default function DesktopSettings() {
         'لم يتم الوصول إلى الخادم. تحقق من الرابط ومن اتصال الإنترنت.');
     }
   };
+
+  const testConnection = () => testUrl(urlDraft, 'frontend');
+  const testApiConnection = () => testUrl(apiUrlDraft, 'api');
 
   const testPrinter = async () => {
     if (!api) return;
@@ -235,21 +264,77 @@ export default function DesktopSettings() {
   }
 
   const hasUrlChanges = urlDraft.trim().replace(/\/+$/, '') !== (settings.frontendUrl || '');
+  const hasApiUrlChanges = apiUrlDraft.trim().replace(/\/+$/, '') !== (settings.productionApiUrl || '');
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <ScreenHeader title="إعدادات سطح المكتب" subtitle="Windows / Electron" />
       <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 40 }}>
 
-        {/* ================= 1. Server URL ================= */}
-        <SectionCard icon="cloud-outline" title="رابط الخادم">
+        {/* ================= 1. Production API URL (database) ================= */}
+        <SectionCard icon="server-outline" title="خادم الإنتاج (قاعدة البيانات)">
+          <Text style={styles.helpText}>
+            هذا هو الرابط الذي تُرسَل إليه جميع طلبات API — يجب أن يكون{'\n'}
+            <Text style={{ fontWeight: '800' }}>نفس الرابط</Text> الذي يستخدمه تطبيق Android لضمان أن كلا الجهازين يقرأان{'\n'}
+            ويكتبان من/إلى نفس قاعدة البيانات.
+          </Text>
+          <Text style={styles.label}>Production API URL</Text>
+          <TextInput
+            testID="input-api-url"
+            style={styles.input}
+            value={apiUrlDraft}
+            onChangeText={setApiUrlDraft}
+            placeholder="https://<your-app>.emergent.host"
+            placeholderTextColor={colors.textMuted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            textAlign="left"
+          />
+          <View style={styles.rowButtons}>
+            <TouchableOpacity
+              testID="btn-test-api"
+              style={[styles.btn, styles.btnSecondary]}
+              disabled={testingUrl}
+              onPress={testApiConnection}
+            >
+              {testingUrl
+                ? <ActivityIndicator color={colors.indigo} size="small" />
+                : <>
+                    <Ionicons name="pulse" size={16} color={colors.indigo} />
+                    <Text style={styles.btnSecondaryText}>اختبار API</Text>
+                  </>}
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="btn-save-api-url"
+              style={[styles.btn, styles.btnPrimary, !hasApiUrlChanges && styles.btnDisabled]}
+              disabled={!hasApiUrlChanges || saving === 'productionApiUrl'}
+              onPress={saveApiUrl}
+            >
+              {saving === 'productionApiUrl'
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <>
+                    <Ionicons name="save" size={16} color="#fff" />
+                    <Text style={styles.btnPrimaryText}>حفظ رابط API</Text>
+                  </>}
+            </TouchableOpacity>
+          </View>
+        </SectionCard>
+
+        {/* ================= 2. Frontend URL (UI bundle) ================= */}
+        <SectionCard icon="cloud-outline" title="رابط الواجهة (HTML/JS)">
+          <Text style={styles.helpText}>
+            هذا هو الرابط الذي تُحمَّل منه واجهة التطبيق (HTML و JavaScript).{'\n'}
+            عادةً يكون رابط preview. لا يؤثّر على قاعدة البيانات لأن Electron{'\n'}
+            يعيد توجيه كل طلبات <Text style={{ fontFamily: 'monospace' }}>/api/*</Text> تلقائياً إلى خادم الإنتاج أعلاه.
+          </Text>
           <Text style={styles.label}>Frontend URL</Text>
           <TextInput
             testID="input-frontend-url"
             style={styles.input}
             value={urlDraft}
             onChangeText={setUrlDraft}
-            placeholder="https://your-app.emergent.host"
+            placeholder="https://<your-app>.preview.emergentagent.com"
             placeholderTextColor={colors.textMuted}
             autoCapitalize="none"
             autoCorrect={false}
@@ -376,6 +461,8 @@ export default function DesktopSettings() {
           <InfoRow label="الإصدار"              value={appInfo?.version || '-'} />
           <InfoRow label="Electron"             value={appInfo?.electron || '-'} />
           <InfoRow label="نظام التشغيل"          value={`${appInfo?.platform || '-'} (${appInfo?.arch || '-'})`} />
+          <InfoRow label="خادم الإنتاج (API)"    value={settings.productionApiUrl || '-'} mono />
+          <InfoRow label="واجهة (Frontend)"      value={settings.frontendUrl || '-'} mono />
           <InfoRow label="مجلد بيانات المستخدم"  value={appInfo?.userData || '-'} mono />
           <InfoRow label="ملف السجل"             value={appInfo?.logFile || '-'} mono />
 
@@ -488,6 +575,7 @@ const styles = StyleSheet.create({
   cardBody: { padding: 14 },
 
   label: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, textAlign: 'right', marginBottom: 6 },
+  helpText: { fontSize: 12, color: colors.textMuted, textAlign: 'right', lineHeight: 20, marginBottom: 10 },
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.textPrimary, backgroundColor: colors.background },
 
   rowButtons: { flexDirection: 'row-reverse', gap: 8, marginTop: 10 },
