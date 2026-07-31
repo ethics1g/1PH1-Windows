@@ -52,6 +52,13 @@ type DesktopAPI = {
     openLogFile: () => Promise<void>;
     reload: () => Promise<true>;
   };
+  diagnostics: {
+    redirects: () => Promise<{
+      rules: { frontendUrl: string; frontendHost: string; productionOrigin: string; productionApiUrl: string };
+      totalRedirected: number;
+      recent: Array<{ n: number; at: string; method: string; from: string; to: string }>;
+    }>;
+  };
 };
 
 declare global {

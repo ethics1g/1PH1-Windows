@@ -54,4 +54,9 @@ contextBridge.exposeInMainWorld('pharmaDesktop', {
     openLogFile: () => ipcRenderer.invoke('app:openLogFile'),
     reload: () => ipcRenderer.invoke('app:reload'),
   },
+
+  /* Diagnostics (live proof that /api/* is being redirected) ---------- */
+  diagnostics: {
+    redirects: () => ipcRenderer.invoke('diagnostics:redirects'),
+  },
 });

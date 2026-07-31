@@ -44,8 +44,8 @@ yarn dist        # ينشئ NSIS installer + Portable exe في مجلد dist\
 ```
 
 الملفات الناتجة في `dist\`:
-- `1PH1-POS-Setup-1.1.0-x64.exe` — Installer NSIS (الأفضل للنشر النهائي)
-- `1PH1-POS-1.1.0-portable.exe` — نسخة محمولة (بدون تثبيت)
+- `1PH1-POS-Setup-1.1.1-x64.exe` — Installer NSIS (الأفضل للنشر النهائي)
+- `1PH1-POS-1.1.1-portable.exe` — نسخة محمولة (بدون تثبيت)
 
 خيارات إضافية:
 ```powershell

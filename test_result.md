@@ -2235,3 +2235,87 @@ agent_communication:
         migration preview→production. Verified locally that 4971 docs
         move in 0.5s across 12 collections, idempotent, safe with
         unique-key constraints. Calling testing_agent now.
+
+---
+
+## Electron v1.1.1 — Hardened API Redirect + Live Diagnostics
+
+frontend:
+  - task: "Robust /api/* redirect with visible in-app diagnostics"
+    implemented: true
+    working: true
+    file: "electron/main.js, electron/preload.js, frontend/src/desktop.ts, frontend/app/settings/desktop.tsx, electron/package.json"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: |
+          User reported Windows v1.1.0 login worked but data was empty.
+          Investigation found:
+            - User's real pharmacy is 07823567874 (صيدلية ابراهيم),
+              451 docs on PRODUCTION, 26 docs on PREVIEW (same
+              pharmacy_id on both DBs because manually seeded).
+            - Login succeeded on Windows because pharmacy exists on both,
+              so we couldn't tell from that alone which DB was actually
+              being used.
+            - Root cause suspected: onBeforeRequest without an explicit
+              `urls` filter can miss requests in some Electron versions,
+              and the previous filter `u.host !== redirectRules.frontendHost`
+              would silently drop any /api call from a URL we hadn't
+              anticipated.
+
+          Changes in v1.1.1:
+            1. Explicit filter `{ urls: ['<all_urls>'] }` on
+               onBeforeRequest — guarantees interception.
+            2. Redirect ANY host with /api/* path (not just frontendHost).
+               Only skips when origin already equals productionOrigin
+               (prevents infinite loops).
+            3. Ring buffer of last 25 redirects with counter, exposed
+               via `diagnostics:redirects` IPC.
+            4. Preload exposes `pharmaDesktop.diagnostics.redirects()`.
+            5. New "تشخيص إعادة التوجيه" card in /settings/desktop
+               shows live counter + last 8 redirects with method/path/
+               timestamp, refreshed every 3s. Verifies to the user
+               (or support) that requests are actually flowing to
+               production.
+
+          Testing performed:
+            - node --check main.js + preload.js: OK.
+            - Launched Electron under xvfb, main.log confirms
+              "API redirect rules" line loaded with correct URLs.
+            - Playwright with mocked pharmaDesktop containing 47
+              redirects: diagnostics card renders with the count in a
+              green success box + list of last 8 redirects.
+            - Regression: settings load, printer picker, cash drawer
+              switch all still work.
+
+          User instructions:
+            1. Rebuild Electron on Windows with `build-windows.bat` →
+               produces `1PH1-POS-Setup-1.1.1-x64.exe`.
+            2. Install, open, log in with 07823567874.
+            3. Open Ctrl+, → scroll to "تشخيص إعادة التوجيه".
+            4. If counter > 0 and shows recent redirects: redirect works
+               → user should now see their 451 production docs.
+            5. If counter is 0 after loading Sell/Inventory screens:
+               something is preventing Electron from intercepting
+               (rare — likely a corporate proxy or DNS override).
+
+          NO migration was executed. User's real data (451 docs on
+          production) is UNTOUCHED. My test artifacts (07999999999,
+          07999999998, 4971 docs each) were cleaned from preview.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        v1.1.1 hardens the redirect (explicit filter + broader host
+        match + loop guard) and adds a live diagnostics card so users
+        can verify the redirect is firing from within the app.
+        No backend changes needed. User rebuilds .exe on Windows and
+        verifies via Ctrl+,.
+
+        IMPORTANT: I did NOT execute any migration because the user's
+        real data (451 docs) is ALREADY on production. Migrating the
+        stale 26 docs from preview would have DELETED the 451 real docs.
+        User was asked and confirmed no overwrite.

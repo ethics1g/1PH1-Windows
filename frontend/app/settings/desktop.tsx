@@ -456,7 +456,10 @@ export default function DesktopSettings() {
           />
         </SectionCard>
 
-        {/* ================= 4. App info ================= */}
+        {/* ================= 4. Redirect Diagnostics ================= */}
+        <RedirectDiagnosticsCard api={api} />
+
+        {/* ================= 5. App info ================= */}
         <SectionCard icon="information-circle-outline" title="حول التطبيق">
           <InfoRow label="الإصدار"              value={appInfo?.version || '-'} />
           <InfoRow label="Electron"             value={appInfo?.electron || '-'} />
@@ -507,6 +510,96 @@ function SectionCard({ icon, title, children }: { icon: keyof typeof Ionicons.gl
       </View>
       <View style={styles.cardBody}>{children}</View>
     </View>
+  );
+}
+
+// ---------- Redirect Diagnostics --------------------------------------------
+
+function RedirectDiagnosticsCard({ api }: { api: any }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = async () => {
+    if (!api?.diagnostics?.redirects) return;
+    setLoading(true);
+    try {
+      const r = await api.diagnostics.redirects();
+      setData(r);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 3000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api]);
+
+  const rules = data?.rules;
+  const total = data?.totalRedirected ?? 0;
+  const recent: any[] = data?.recent || [];
+  const isHealthy = total > 0;
+
+  return (
+    <SectionCard icon="git-network-outline" title="تشخيص إعادة التوجيه (Redirect)">
+      <Text style={styles.helpText}>
+        هذا القسم يُظهر أن Windows فعلاً يوجّه طلبات <Text style={{ fontFamily: 'monospace' }}>/api/*</Text> إلى خادم الإنتاج.{'\n'}
+        الرقم أدناه هو عدد الطلبات التي تمّت إعادة توجيهها منذ فتح التطبيق.
+      </Text>
+
+      <View style={[styles.statBox, isHealthy ? styles.statOk : styles.statPending]}>
+        <Text style={styles.statNumber}>{total}</Text>
+        <Text style={styles.statLabel}>
+          {isHealthy ? 'طلب أُعيد توجيهه ✅' : 'لم يتم إعادة توجيه أي طلب بعد'}
+        </Text>
+      </View>
+
+      {rules ? (
+        <>
+          <InfoRow label="من (Preview)"  value={rules.frontendHost || '-'} mono />
+          <InfoRow label="إلى (Production)" value={rules.productionOrigin || '-'} mono />
+        </>
+      ) : null}
+
+      {recent.length > 0 ? (
+        <>
+          <Text style={[styles.label, { marginTop: 12 }]}>آخر {recent.length} طلبات</Text>
+          <View style={{ gap: 4 }}>
+            {recent.slice(-8).reverse().map((r) => (
+              <View key={r.n} style={styles.redirectRow}>
+                <Text style={styles.redirectMethod}>{r.method}</Text>
+                <Text style={styles.redirectPath} numberOfLines={1} ellipsizeMode="middle">
+                  {(r.from || '').replace(/^https?:\/\/[^/]+/, '')}
+                </Text>
+                <Text style={styles.redirectTime}>
+                  {(r.at || '').split('T')[1]?.slice(0, 8) || ''}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </>
+      ) : (
+        <Text style={styles.emptyText}>
+          افتح شاشة البيع أو المخزن أو المحاسبة ثم عد إلى هنا — ستُملأ القائمة تلقائياً.
+        </Text>
+      )}
+
+      <TouchableOpacity
+        testID="btn-refresh-diagnostics"
+        style={[styles.btn, styles.btnSecondary, { marginTop: 10 }]}
+        onPress={refresh}
+        disabled={loading}
+      >
+        {loading
+          ? <ActivityIndicator color={colors.indigo} size="small" />
+          : <>
+              <Ionicons name="refresh" size={16} color={colors.indigo} />
+              <Text style={styles.btnSecondaryText}>تحديث</Text>
+            </>}
+      </TouchableOpacity>
+    </SectionCard>
   );
 }
 
@@ -597,6 +690,15 @@ const styles = StyleSheet.create({
   switchSub: { fontSize: 11, color: colors.textMuted, textAlign: 'right', marginTop: 2 },
 
   emptyText: { fontSize: 13, color: colors.textMuted, textAlign: 'right', paddingVertical: 12 },
+  statBox: { alignItems: 'center', paddingVertical: 16, borderRadius: 12, borderWidth: 1, marginBottom: 12 },
+  statOk: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  statPending: { borderColor: colors.border, backgroundColor: colors.background },
+  statNumber: { fontSize: 32, fontWeight: '900', color: colors.textPrimary },
+  statLabel: { fontSize: 12, color: colors.textSecondary, marginTop: 4, textAlign: 'center' },
+  redirectRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: 8, paddingVertical: 4 },
+  redirectMethod: { fontSize: 10, fontWeight: '800', color: colors.indigo, minWidth: 40, textAlign: 'center', backgroundColor: colors.indigoLight, paddingVertical: 2, paddingHorizontal: 4, borderRadius: 4 },
+  redirectPath: { flex: 1, fontSize: 11, color: colors.textPrimary, fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }), textAlign: 'left' },
+  redirectTime: { fontSize: 10, color: colors.textMuted, fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }) },
   printerRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: 10, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background },
   printerRowActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
   printerName: { fontSize: 14, fontWeight: '700', color: colors.textPrimary, textAlign: 'right' },

@@ -522,21 +522,56 @@ if (!gotLock) {
     let redirectRules = buildApiRedirectRules();
     log('API redirect rules:', redirectRules);
 
-    session.defaultSession.webRequest.onBeforeRequest((details, cb) => {
+    // Ring buffer of the most recent redirects (exposed via IPC for the
+    // /settings/desktop diagnostics panel). Helps users prove that
+    // Windows is really talking to production, not preview.
+    const RECENT_REDIRECTS = [];
+    const MAX_RECENT = 25;
+    let redirectCount = 0;
+
+    // Explicit URL filter — Electron's onBeforeRequest may miss requests
+    // without one on some platforms. `<all_urls>` guarantees we see every
+    // request the renderer makes.
+    session.defaultSession.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, cb) => {
       try {
-        // We only rewrite HTTPS API calls, not the initial page load itself.
         const u = new URL(details.url);
-        if (u.host !== redirectRules.frontendHost) return cb({});
-        if (!u.pathname.startsWith('/api/') && u.pathname !== '/api') return cb({});
-        // Rewrite host → production origin, keep path + query.
+        // Only rewrite /api/* HTTPS calls. Match any host whose path starts
+        // with /api/ — this makes the redirect resilient even if the bundle
+        // is served from a different subdomain than we expected.
+        const isApiPath = u.pathname === '/api' || u.pathname.startsWith('/api/');
+        if (!isApiPath) return cb({});
         const productionOrigin = redirectRules.productionOrigin;
+        if (!productionOrigin) return cb({});
+        // Don't redirect if we're already targeting the production origin —
+        // prevents infinite loops if the frontend was rebuilt with the
+        // production URL baked in.
+        if (u.origin === productionOrigin) return cb({});
         const rewritten = `${productionOrigin}${u.pathname}${u.search}${u.hash}`;
-        if (rewritten === details.url) return cb({});
+        redirectCount++;
+        if (RECENT_REDIRECTS.length >= MAX_RECENT) RECENT_REDIRECTS.shift();
+        RECENT_REDIRECTS.push({
+          n: redirectCount,
+          at: new Date().toISOString(),
+          method: details.method,
+          from: details.url,
+          to: rewritten,
+        });
+        if (redirectCount <= 5 || redirectCount % 50 === 0) {
+          log(`API redirect #${redirectCount}: ${details.method} ${u.pathname} → ${productionOrigin}`);
+        }
         return cb({ redirectURL: rewritten });
-      } catch {
+      } catch (e) {
+        log('onBeforeRequest error:', e && e.message);
         return cb({});
       }
     });
+
+    // Expose diagnostics to the renderer.
+    ipcMain.handle('diagnostics:redirects', () => ({
+      rules: redirectRules,
+      totalRedirected: redirectCount,
+      recent: RECENT_REDIRECTS.slice(-15),
+    }));
 
     // When the user updates settings via /settings/desktop we refresh the
     // in-memory rules so the change takes effect without a full restart.
