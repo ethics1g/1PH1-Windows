@@ -1,5 +1,10 @@
 import { useEffect } from 'react';
 import { Platform, View, ActivityIndicator } from 'react-native';
+// Bulletproof icon-font preloader — MUST be the first non-React import so it
+// runs at module init, before any component mounts. On native this is a
+// no-op; on web (Windows Electron desktop) it registers Ionicons via the
+// FontFace API immediately so icons never flash as ☐ boxes.
+import '../src/preloadWebFonts';
 import { Stack, useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import * as Linking from 'expo-linking';
