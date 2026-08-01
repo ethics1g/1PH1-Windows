@@ -368,6 +368,22 @@ function navigate(route) {
 // ---------------- Native application menu (Arabic RTL) ----------------
 function buildMenu() {
   const nav = (route) => () => navigate(route);
+  //
+  // IMPORTANT — DO NOT set `accelerator: 'F2'..'F8'` on any of the
+  // navigation menu items. Native menu accelerators fire at the OS level
+  // BEFORE any renderer-side handler, which means the URL-based scanner-
+  // route guard in `before-input-event` was being completely bypassed
+  // whenever the barcode scanner emitted an F-key (many HID scanners
+  // send F8 as a burst prefix/suffix). Result: mid-scan navigation to
+  // /suppliers with a broken back stack.
+  //
+  // We instead keep the F-key labels for user discoverability, but the
+  // actual shortcut handling lives entirely in `before-input-event`,
+  // where the guard on /sell, /buy, /inventory, /orders, /returns can
+  // suppress F-keys during scanning. F-keys still work on every OTHER
+  // screen (home, dashboards, accounting, …) because that same handler
+  // does forward them there.
+  //
   const template = [
     {
       label: 'الملف',
@@ -382,13 +398,14 @@ function buildMenu() {
     {
       label: 'العمليات',
       submenu: [
-        { label: 'بيع (F2)',        accelerator: 'F2', click: nav('/sell') },
-        { label: 'شراء (F3)',       accelerator: 'F3', click: nav('/buy') },
-        { label: 'المخزن (F4)',      accelerator: 'F4', click: nav('/inventory') },
-        { label: 'الزبائن (F5)',     accelerator: 'F5', click: nav('/customers') },
-        { label: 'المحاسبة (F6)',    accelerator: 'F6', click: nav('/accounting') },
-        { label: 'طلباتي (F7)',      accelerator: 'F7', click: nav('/pharmacy-orders') },
-        { label: 'المذاخر (F8)',     accelerator: 'F8', click: nav('/suppliers') },
+        // NB: `accelerator:` deliberately omitted — see comment above.
+        { label: 'بيع (F2)',        click: nav('/sell') },
+        { label: 'شراء (F3)',       click: nav('/buy') },
+        { label: 'المخزن (F4)',      click: nav('/inventory') },
+        { label: 'الزبائن (F5)',     click: nav('/customers') },
+        { label: 'المحاسبة (F6)',    click: nav('/accounting') },
+        { label: 'طلباتي (F7)',      click: nav('/pharmacy-orders') },
+        { label: 'المذاخر (F8)',     click: nav('/suppliers') },
       ],
     },
     {
