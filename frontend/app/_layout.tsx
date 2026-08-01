@@ -1,8 +1,10 @@
 import { useEffect } from 'react';
-import { Platform } from 'react-native';
+import { Platform, View, ActivityIndicator } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import * as Linking from 'expo-linking';
+import { useFonts } from 'expo-font';
+import { Ionicons } from '@expo/vector-icons';
 import { AuthProvider } from '../src/auth';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ExternalScannerProvider } from '../src/externalScanner';
@@ -36,6 +38,26 @@ if (Platform.OS === 'android') {
 export default function RootLayout() {
   const router = useRouter();
 
+  // ---------------------------------------------------------------
+  // Preload vector-icon fonts BEFORE rendering the tree.
+  //
+  // On native (Android / iOS) `useFonts` is a no-op wrapper around the
+  // native font loader — fonts are already linked into the binary via
+  // the `expo-font` config plugin, so this resolves synchronously.
+  //
+  // On web (Expo Metro static export loaded inside Electron) this uses
+  // the browser's FontFace API to fetch the .ttf, register it in
+  // `document.fonts`, and only then mark it ready. Without this step
+  // `@expo/vector-icons` lazily injects an `@font-face` CSS rule the
+  // first time the <Ionicons/> component renders — and Chromium was
+  // rendering the initial paint with a fallback font before the font
+  // arrived, showing every icon glyph as a ☐ box. Preloading here
+  // guarantees the font is in `document.fonts` before the first paint.
+  // ---------------------------------------------------------------
+  const [fontsLoaded] = useFonts({
+    ...Ionicons.font,
+  });
+
   // Wire Electron desktop shell (F2/F3/F4/… menu items) → expo-router.
   // No-op on iOS, Android, and plain web PWA.
   useDesktopNavigation();
@@ -68,6 +90,17 @@ export default function RootLayout() {
 
     return () => { tapSub.remove(); };
   }, [router]);
+
+  // Hold the render until Ionicons is registered in `document.fonts`.
+  // Prevents the "☐ boxes" flash-of-unstyled-icons on the Windows
+  // Electron shell. On native this is essentially instant.
+  if (!fontsLoaded) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#030712' }}>
+        <ActivityIndicator size="large" color="#22c55e" />
+      </View>
+    );
+  }
 
   return (
     <SafeAreaProvider>
