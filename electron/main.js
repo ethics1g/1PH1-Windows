@@ -1,50 +1,41 @@
 /**
- * 1PH1 Pharmacy POS — Electron Main Process (v1.2.0 — offline shell)
+ * 1PH1 Pharmacy POS — Electron Main Process (v1.3.0 — loopback-http shell)
  * =============================================================================
  *
- * ARCHITECTURE (v1.2.0):
+ * ARCHITECTURE (v1.3.0):
  *   • The full Expo web bundle is exported at build time with
  *     `EXPO_PUBLIC_BACKEND_URL=https://pharma-checkout-8.emergent.host` and
  *     shipped inside `electron/webapp/`.
- *   • Electron serves those files locally via a custom `app://` protocol.
- *     No preview URL is ever hit at runtime.
+ *   • On startup Electron boots a tiny loopback-only HTTP server on
+ *     `127.0.0.1:<random-free-port>` that streams those files. The renderer
+ *     loads `http://127.0.0.1:<port>/` — a first-class HTTP origin, so
+ *     `@font-face`-based icon fonts (Ionicons, Feather, MaterialCommunity…)
+ *     work reliably. Custom `app://` protocols silently blocked font
+ *     loading, causing every icon to render as a ☐ box.
  *   • All API calls made by the bundled frontend go DIRECTLY to the
  *     production backend (baked-in at export time), so Windows and
  *     Android use exactly the same MongoDB database — always.
- *   • No boot-up "wake the preview" splash, no 6000 ms timeout error.
- *
- * The `app://` scheme is treated by Chromium as a first-class HTTPS-like
- * origin, which:
- *   - resolves absolute paths (`/_expo/static/js/...`) correctly,
- *   - satisfies expo-router history routing without a real HTTP server,
- *   - is a "standard, secure, CORS-enabled" scheme so fetch() to
- *     `https://pharma-checkout-8.emergent.host/api/*` works with CORS
- *     headers the backend already returns.
+ *   • The HTTP server is bound to `127.0.0.1` only and is never exposed
+ *     on the LAN. No boot-up "wake the preview" splash, no timeout error.
  */
 const {
   app, BrowserWindow, Menu, ipcMain, shell, dialog,
-  session, protocol, net,
+  session,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const url = require('url');
+const http = require('http');
 const Store = require('electron-store');
 const { PosPrinter } = require('electron-pos-printer');
 
-// ---------------- Register the app:// scheme as privileged BEFORE app.ready.
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: 'app',
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      corsEnabled: true,
-      allowServiceWorkers: true,
-      stream: true,
-    },
-  },
-]);
+// Note: we intentionally do NOT use a custom `app://` protocol any more.
+// Chromium blocks `@font-face` loading from non-standard schemes even with
+// CORS headers set — this caused the pharmacy icons (Ionicons, Feather, …)
+// to render as ☐ boxes on Windows. Instead we boot a tiny loopback-only
+// HTTP server on 127.0.0.1:<random-free-port> and load the SPA from
+// there. This gives us a fully-featured HTTP origin that Chromium treats
+// as first-class, so fonts, service workers, and everything else "just
+// work" without any special headers.
 
 // ---------------- Logging (file + console) ----------------
 const LOG_DIR = path.join(app.getPath('userData'), 'logs');
@@ -92,11 +83,8 @@ try {
 let mainWindow = null;
 
 // ---------------- MIME-type map (file ext → Content-Type) ----------------
-// We build responses manually so we can (a) set the correct Content-Type
-// for every asset type Expo emits (especially .ttf fonts, which Chromium
-// otherwise refuses to apply → icons render as ☐ boxes), and (b) attach
-// CORS headers so injected `@font-face { src: url(...) }` rules load
-// reliably from the app:// origin.
+// Set the right Content-Type for every asset Expo emits — especially
+// .ttf fonts, which browsers otherwise refuse to apply → icons ☐.
 const MIME_TYPES = {
   '.html':  'text/html; charset=utf-8',
   '.htm':   'text/html; charset=utf-8',
@@ -125,74 +113,72 @@ function mimeFor(filePath) {
   return MIME_TYPES[ext] || 'application/octet-stream';
 }
 
-// ---------------- Custom `app://` protocol handler ----------------
-// Every request to `app://local/...` is served from `webapp/`.
-// Unknown paths (e.g. deep expo-router routes on cold start) fall back to
-// index.html so the SPA can hydrate and route client-side.
-//
-// We read files with `fs.readFile` (asar-transparent) and build explicit
-// Response objects with proper MIME types + CORS headers. This is what
-// fixes:
-//   • "Unmatched Route" — the initial load target is now `app://local/`
-//     (pathname "/"), which expo-router matches to the index route.
-//   • ☐ icon glyphs — .ttf files are now served with `Content-Type: font/ttf`
-//     and `Access-Control-Allow-Origin: *`, so Chromium accepts them for
-//     @font-face rules injected by expo-font.
-function registerAppProtocol() {
-  const WEBAPP_ROOT = path.resolve(WEBAPP_DIR);
+// ---------------- Local HTTP server (loopback only) ----------------
+// Serves the exported Expo web bundle over http://127.0.0.1:<port>/ so
+// the renderer runs from a first-class HTTP origin. Bound to 127.0.0.1
+// only — never exposed on the LAN. Port 0 asks the OS for a free port.
+let localServer = null;
+let localServerPort = 0;
+const WEBAPP_ROOT = path.resolve(WEBAPP_DIR);
 
-  session.defaultSession.protocol.handle('app', async (request) => {
-    try {
-      const parsed = new URL(request.url);
-      // Ignore host component — we always serve from WEBAPP_DIR.
-      let pathname = decodeURIComponent(parsed.pathname || '/');
-      // Strip query/hash artefacts, prevent path traversal.
-      pathname = path.posix.normalize(pathname).replace(/^\/+/, '');
+function resolveWebappFile(rawPathname) {
+  let pathname = decodeURIComponent(rawPathname || '/');
+  pathname = pathname.split('?')[0].split('#')[0];
+  pathname = path.posix.normalize(pathname).replace(/^\/+/, '');
+  // Normalise `index.html` → root so expo-router matches the index route.
+  if (pathname === 'index.html') pathname = '';
+  if (!pathname) return INDEX_FILE;
 
-      // Normalise `index.html` → root so expo-router matches the index route
-      // instead of showing "+not-found" when pathname is literally "/index.html".
-      if (pathname === 'index.html') pathname = '';
+  const direct   = path.join(WEBAPP_DIR, pathname);
+  const asIndex  = path.join(WEBAPP_DIR, pathname, 'index.html');
+  const asHtml   = path.join(WEBAPP_DIR, `${pathname.replace(/\/$/, '')}.html`);
+  if (fs.existsSync(direct)  && fs.statSync(direct).isFile()) return direct;
+  if (fs.existsSync(asIndex))                                 return asIndex;
+  if (fs.existsSync(asHtml))                                  return asHtml;
+  return INDEX_FILE;                                          // SPA fallback
+}
 
-      let filePath;
-      if (!pathname) {
-        // Root — serve the SPA entry point.
-        filePath = INDEX_FILE;
-      } else {
-        const direct   = path.join(WEBAPP_DIR, pathname);
-        const asIndex  = path.join(WEBAPP_DIR, pathname, 'index.html');
-        const asHtml   = path.join(WEBAPP_DIR, `${pathname.replace(/\/$/, '')}.html`);
-        if      (fs.existsSync(direct)  && fs.statSync(direct).isFile()) filePath = direct;
-        else if (fs.existsSync(asIndex))                                 filePath = asIndex;
-        else if (fs.existsSync(asHtml))                                  filePath = asHtml;
-        else                                                             filePath = INDEX_FILE;
-      }
-
-      // Defence in depth — guarantee we stay inside WEBAPP_DIR.
-      const resolved = path.resolve(filePath);
-      if (!resolved.startsWith(WEBAPP_ROOT)) {
-        return new Response('403 forbidden', { status: 403 });
-      }
-
-      const data = fs.readFileSync(resolved);        // asar-aware
-      const contentType = mimeFor(resolved);
-      return new Response(data, {
-        status: 200,
-        headers: {
-          'Content-Type': contentType,
-          'Content-Length': String(data.length),
-          // Same-origin serves for app://local, but explicit ACAO keeps
-          // Chromium happy when it treats font requests as "opaque" on
-          // custom schemes. Costs nothing and prevents silent ☐-boxes.
+function startLocalServer() {
+  return new Promise((resolve, reject) => {
+    localServer = http.createServer((req, res) => {
+      try {
+        const parsed = new URL(req.url, 'http://127.0.0.1');
+        const filePath = resolveWebappFile(parsed.pathname);
+        // Defence in depth — never leak files outside WEBAPP_DIR.
+        const resolved = path.resolve(filePath);
+        if (!resolved.startsWith(WEBAPP_ROOT)) {
+          res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('403 forbidden');
+          return;
+        }
+        const data = fs.readFileSync(resolved); // asar-transparent
+        res.writeHead(200, {
+          'Content-Type':   mimeFor(resolved),
+          'Content-Length': data.length,
+          'Cache-Control':  'no-cache',
+          // Fonts are same-origin here (both page and .ttf are on
+          // 127.0.0.1:<port>) so CORS is not strictly needed, but this
+          // header is harmless and future-proofs cross-origin fetches.
           'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'no-cache',
-        },
-      });
-    } catch (e) {
-      log('app:// handler error:', e && e.message, 'for', request.url);
-      return new Response(`internal error: ${e && e.message}`, { status: 500 });
-    }
+        });
+        res.end(data);
+      } catch (e) {
+        log('local-server error:', e && e.message, 'for', req.url);
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('500 internal error');
+      }
+    });
+    // Bind to loopback only — never accept connections from the LAN.
+    localServer.listen(0, '127.0.0.1', () => {
+      localServerPort = localServer.address().port;
+      log('Local HTTP server listening on http://127.0.0.1:' + localServerPort);
+      resolve(localServerPort);
+    });
+    localServer.on('error', (err) => {
+      log('Local HTTP server error:', err && err.message);
+      reject(err);
+    });
   });
-  log('Registered app:// protocol handler, WEBAPP_DIR =', WEBAPP_DIR);
 }
 
 // ---------------- Window creation ----------------
@@ -239,19 +225,16 @@ async function createWindow() {
     store.set('zoomFactor', next);
   });
 
-  // Load the LOCAL bundled SPA entry — no network, no preview URL.
-  //
-  // IMPORTANT: We deliberately load `app://local/` (root, pathname "/") and
-  // NOT `app://local/index.html`. Expo Router reads `window.location.pathname`
-  // to decide which screen to render. If pathname is `/index.html`, no route
-  // matches and it falls through to the `+not-found` screen ("Unmatched
-  // Route — Page could not be found"). Loading the root path makes it match
-  // the `index` route, which then redirects to /login or /home.
+  // Load the LOCAL bundled SPA entry over a real HTTP loopback origin —
+  // this is what makes @font-face-based vector icons work on Windows.
+  // Custom protocols like app:// silently blocked font loading, showing
+  // every icon as a ☐ box.
   try {
-    await mainWindow.loadURL('app://local/');
+    if (!localServerPort) await startLocalServer();
+    await mainWindow.loadURL(`http://127.0.0.1:${localServerPort}/`);
     mainWindow.show();
   } catch (e) {
-    log('loadURL app:// failed:', e && e.message);
+    log('loadURL local server failed:', e && e.message);
     dialog.showErrorBox(
       'خطأ في تحميل التطبيق',
       `فشل تحميل الواجهة المحلية.\n\n${e && e.message}\n\n`
@@ -267,12 +250,15 @@ async function createWindow() {
     return { action: 'deny' };
   });
 
-  // Prevent navigation away from the app:// origin (except to the
+  // Prevent navigation away from the local server origin (except to the
   // production API, which is fetched — not navigated to).
   mainWindow.webContents.on('will-navigate', (e, target) => {
     try {
       const t = new URL(target);
-      if (t.protocol !== 'app:') {
+      const isLocal =
+        t.protocol === 'http:' && t.hostname === '127.0.0.1'
+        && t.port === String(localServerPort);
+      if (!isLocal) {
         e.preventDefault();
         shell.openExternal(target);
       }
@@ -506,10 +492,10 @@ const MAX_API_LOG = 25;
 let apiRequestCount = 0;
 ipcMain.handle('diagnostics:redirects', () => ({
   rules: {
-    frontendUrl: 'app://local/',
+    frontendUrl: localServerPort ? `http://127.0.0.1:${localServerPort}/` : '(not started)',
     productionOrigin: PRODUCTION_API_URL,
     productionApiUrl: PRODUCTION_API_URL,
-    mode: 'offline-shell',   // v1.2.0
+    mode: 'loopback-http-shell',   // v1.3.0 (font-safe)
   },
   totalRedirected: apiRequestCount,
   recent: API_REQUEST_LOG.slice(-15),
@@ -530,8 +516,21 @@ if (!gotLock) {
     }
   });
 
-  app.whenReady().then(() => {
-    registerAppProtocol();
+  app.whenReady().then(async () => {
+    // Boot the loopback HTTP server that hosts the exported Expo bundle.
+    // Must complete BEFORE we open the window, so loadURL has a live port.
+    try {
+      await startLocalServer();
+    } catch (e) {
+      log('startLocalServer failed:', e && e.message);
+      dialog.showErrorBox(
+        'خطأ في تشغيل التطبيق',
+        `فشل تشغيل خادم الواجهة المحلية.\n\n${e && e.message}\n\n`
+        + 'أعد تثبيت التطبيق. ملف السجل: ' + LOG_FILE,
+      );
+      app.quit();
+      return;
+    }
 
     // Passive observer of production API calls — used ONLY for the
     // in-app diagnostics panel. No rewriting happens; the bundle already
@@ -564,6 +563,7 @@ if (!gotLock) {
   });
 
   app.on('window-all-closed', () => {
+    try { if (localServer) localServer.close(); } catch { /* noop */ }
     if (process.platform !== 'darwin') app.quit();
   });
 }
