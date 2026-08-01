@@ -137,15 +137,30 @@ function resolveWebappFile(rawPathname) {
   pathname = path.posix.normalize(pathname).replace(/^\/+/, '');
   // Normalise `index.html` → root so expo-router matches the index route.
   if (pathname === 'index.html') pathname = '';
-  if (!pathname) return INDEX_FILE;
+  if (!pathname) return { file: INDEX_FILE, kind: 'index' };
 
   const direct   = path.join(WEBAPP_DIR, pathname);
   const asIndex  = path.join(WEBAPP_DIR, pathname, 'index.html');
   const asHtml   = path.join(WEBAPP_DIR, `${pathname.replace(/\/$/, '')}.html`);
-  if (fs.existsSync(direct)  && fs.statSync(direct).isFile()) return direct;
-  if (fs.existsSync(asIndex))                                 return asIndex;
-  if (fs.existsSync(asHtml))                                  return asHtml;
-  return INDEX_FILE;                                          // SPA fallback
+  if (fs.existsSync(direct)  && fs.statSync(direct).isFile()) return { file: direct,  kind: 'direct' };
+  if (fs.existsSync(asIndex))                                 return { file: asIndex, kind: 'index' };
+  if (fs.existsSync(asHtml))                                  return { file: asHtml,  kind: 'route'  };
+
+  // MISSING file. Static assets (fonts, images, JS, CSS, JSON) MUST get
+  // a real 404 so the caller (Chromium's font/image/JS loader) fails
+  // fast instead of silently receiving `index.html` and trying to parse
+  // 30 KB of HTML as a TTF glyph table — which is what was making all
+  // vector-icon glyphs render as ☐ boxes when the .ttf files failed to
+  // ship inside the packaged asar (electron-builder was pruning the
+  // `node_modules`-shaped subfolder in `webapp/assets/`).
+  //
+  // Only fall back to index.html for extensionless / .html requests
+  // (deep expo-router routes on cold start).
+  const ext = path.extname(pathname).toLowerCase();
+  if (ext && ext !== '.html' && ext !== '.htm') {
+    return { file: null, kind: 'missing' };
+  }
+  return { file: INDEX_FILE, kind: 'spa-fallback' };
 }
 
 function startLocalServer() {
@@ -153,22 +168,31 @@ function startLocalServer() {
     localServer = http.createServer((req, res) => {
       try {
         const parsed = new URL(req.url, 'http://127.0.0.1');
-        const filePath = resolveWebappFile(parsed.pathname);
+        const resolved = resolveWebappFile(parsed.pathname);
+
+        if (!resolved.file) {
+          // Real 404 — the asset genuinely isn't in the bundled webapp.
+          // This is the ONLY signal Chromium's font loader will accept
+          // to fail-fast; returning index.html here would surface as
+          // ☐-box glyphs everywhere.
+          log('404 missing static asset:', parsed.pathname);
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('404 not found');
+          return;
+        }
+
         // Defence in depth — never leak files outside WEBAPP_DIR.
-        const resolved = path.resolve(filePath);
-        if (!resolved.startsWith(WEBAPP_ROOT)) {
+        const abs = path.resolve(resolved.file);
+        if (!abs.startsWith(WEBAPP_ROOT)) {
           res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
           res.end('403 forbidden');
           return;
         }
-        const data = fs.readFileSync(resolved); // asar-transparent
+        const data = fs.readFileSync(abs); // asar-transparent
         res.writeHead(200, {
-          'Content-Type':   mimeFor(resolved),
+          'Content-Type':   mimeFor(abs),
           'Content-Length': data.length,
           'Cache-Control':  'no-cache',
-          // Fonts are same-origin here (both page and .ttf are on
-          // 127.0.0.1:<port>) so CORS is not strictly needed, but this
-          // header is harmless and future-proofs cross-origin fetches.
           'Access-Control-Allow-Origin': '*',
         });
         res.end(data);

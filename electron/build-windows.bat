@@ -45,13 +45,23 @@ if errorlevel 1 (popd & exit /b 1)
 popd
 
 echo.
-echo [4/5] Copying frontend bundle into Electron...
+echo [4/6] Copying frontend bundle into Electron...
 if exist webapp rmdir /s /q webapp
 xcopy /E /I /Q /Y "..\frontend\dist" "webapp"
 if errorlevel 1 exit /b 1
 
 echo.
-echo [5/5] Building Windows .exe (NSIS + portable)...
+echo [5/6] Applying post-export fix (rename node_modules -^> _pkg_)...
+REM electron-builder prunes any folder literally named 'node_modules', even
+REM deep inside a whitelisted directory. Expo exports vendored icon-fonts
+REM under webapp/assets/node_modules/@expo/vector-icons/.../*.ttf and those
+REM files vanish from the packaged app.asar unless we rename the segment.
+REM Result before this step: every icon renders as a  box on the desktop.
+call node post-export-fix.js
+if errorlevel 1 exit /b 1
+
+echo.
+echo [6/6] Building Windows .exe (NSIS + portable)...
 call yarn dist
 if errorlevel 1 exit /b 1
 
