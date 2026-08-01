@@ -116,10 +116,20 @@ function mimeFor(filePath) {
 // ---------------- Local HTTP server (loopback only) ----------------
 // Serves the exported Expo web bundle over http://127.0.0.1:<port>/ so
 // the renderer runs from a first-class HTTP origin. Bound to 127.0.0.1
-// only — never exposed on the LAN. Port 0 asks the OS for a free port.
+// only — never exposed on the LAN.
+//
+// IMPORTANT — port MUST be stable across launches. Chromium binds
+// `localStorage` (and therefore AsyncStorage / auth session) to the
+// full origin, including the port. If we picked a random free port
+// every launch, the origin would change → localStorage would be empty →
+// the user would have to log in again on every app restart. We use a
+// fixed high port (41871). If it is somehow already in use we try a
+// deterministic small ladder so the origin still stays stable per
+// machine (the OS almost never gives out this range to other apps).
 let localServer = null;
 let localServerPort = 0;
 const WEBAPP_ROOT = path.resolve(WEBAPP_DIR);
+const PREFERRED_PORTS = [41871, 41872, 41873, 41874, 41875];
 
 function resolveWebappFile(rawPathname) {
   let pathname = decodeURIComponent(rawPathname || '/');
@@ -139,7 +149,7 @@ function resolveWebappFile(rawPathname) {
 }
 
 function startLocalServer() {
-  return new Promise((resolve, reject) => {
+  const tryListen = (port) => new Promise((resolve, reject) => {
     localServer = http.createServer((req, res) => {
       try {
         const parsed = new URL(req.url, 'http://127.0.0.1');
@@ -168,17 +178,30 @@ function startLocalServer() {
         res.end('500 internal error');
       }
     });
+    localServer.once('error', (err) => reject(err));
     // Bind to loopback only — never accept connections from the LAN.
-    localServer.listen(0, '127.0.0.1', () => {
+    localServer.listen(port, '127.0.0.1', () => {
       localServerPort = localServer.address().port;
-      log('Local HTTP server listening on http://127.0.0.1:' + localServerPort);
+      log(`Local HTTP server listening on http://127.0.0.1:${localServerPort} (requested ${port})`);
       resolve(localServerPort);
     });
-    localServer.on('error', (err) => {
-      log('Local HTTP server error:', err && err.message);
-      reject(err);
-    });
   });
+
+  // Walk the preferred-port ladder so the origin stays stable across
+  // launches → localStorage / auth session survives app restarts.
+  return (async () => {
+    for (const p of PREFERRED_PORTS) {
+      try {
+        return await tryListen(p);
+      } catch (err) {
+        log(`port ${p} unavailable: ${err && err.message}. Trying next…`);
+      }
+    }
+    // Ladder exhausted — fall back to any free port (session will reset
+    // on this rare unlucky launch, but the app still works).
+    log('All preferred ports busy, falling back to OS-assigned port.');
+    return await tryListen(0);
+  })();
 }
 
 // ---------------- Window creation ----------------
@@ -270,8 +293,36 @@ async function createWindow() {
   });
 
   // POS-friendly key shortcuts — scoped to this window.
+  //
+  // IMPORTANT: HID barcode scanners (very common in pharmacy POS setups)
+  // emit their scans as a rapid burst of synthetic key events, and many
+  // industrial scanners are pre-configured to send an F-key (typically
+  // F8) as a prefix or suffix marker. That was silently triggering
+  // "F8 → /suppliers" navigation mid-scan and stranding the user on the
+  // suppliers screen with a broken back stack.
+  //
+  // Fix: disable F-key global shortcuts on the small set of routes where
+  // barcodes are actually scanned. Users on those screens still navigate
+  // via the top menu bar (الملف / العمليات …) or Ctrl+H → Home. On
+  // every other screen (dashboards, accounting, settings…) F2–F8 keep
+  // working exactly as before.
+  const SCANNER_ROUTES = ['/sell', '/buy', '/inventory', '/orders', '/returns'];
+  const isOnScannerRoute = () => {
+    try {
+      const u = new URL(mainWindow.webContents.getURL());
+      const p = u.pathname || '/';
+      return SCANNER_ROUTES.some((r) => p === r || p.startsWith(r + '/'));
+    } catch { return false; }
+  };
+
   mainWindow.webContents.on('before-input-event', (e, input) => {
     if (input.type !== 'keyDown') return;
+
+    // Never hijack F-keys while the user is on a scanner-heavy screen —
+    // this is the fix for the "scanner → Suppliers screen" bug.
+    const isFKey = /^F([1-9]|1[0-2])$/.test(input.key || '');
+    if (isFKey && isOnScannerRoute()) return;
+
     const goto = (route) => { e.preventDefault(); navigate(route); };
     switch (input.key) {
       case 'F2': return goto('/sell');
@@ -286,8 +337,8 @@ async function createWindow() {
       case 'F8': return goto('/suppliers');
     }
     if ((input.control || input.meta) && !input.shift && !input.alt) {
-      if (input.key.toLowerCase() === 'h') return goto('/home');
-      if (input.key === ',')               return goto('/settings/desktop');
+      if ((input.key || '').toLowerCase() === 'h') return goto('/home');
+      if (input.key === ',')                        return goto('/settings/desktop');
     }
   });
 
