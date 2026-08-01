@@ -91,40 +91,104 @@ try {
 
 let mainWindow = null;
 
+// ---------------- MIME-type map (file ext → Content-Type) ----------------
+// We build responses manually so we can (a) set the correct Content-Type
+// for every asset type Expo emits (especially .ttf fonts, which Chromium
+// otherwise refuses to apply → icons render as ☐ boxes), and (b) attach
+// CORS headers so injected `@font-face { src: url(...) }` rules load
+// reliably from the app:// origin.
+const MIME_TYPES = {
+  '.html':  'text/html; charset=utf-8',
+  '.htm':   'text/html; charset=utf-8',
+  '.js':    'application/javascript; charset=utf-8',
+  '.mjs':   'application/javascript; charset=utf-8',
+  '.css':   'text/css; charset=utf-8',
+  '.json':  'application/json; charset=utf-8',
+  '.map':   'application/json; charset=utf-8',
+  '.svg':   'image/svg+xml',
+  '.png':   'image/png',
+  '.jpg':   'image/jpeg',
+  '.jpeg':  'image/jpeg',
+  '.gif':   'image/gif',
+  '.webp':  'image/webp',
+  '.ico':   'image/x-icon',
+  '.ttf':   'font/ttf',
+  '.otf':   'font/otf',
+  '.woff':  'font/woff',
+  '.woff2': 'font/woff2',
+  '.eot':   'application/vnd.ms-fontobject',
+  '.wasm':  'application/wasm',
+  '.txt':   'text/plain; charset=utf-8',
+};
+function mimeFor(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  return MIME_TYPES[ext] || 'application/octet-stream';
+}
+
 // ---------------- Custom `app://` protocol handler ----------------
-// Every request to `app://index.html/...` is served from `webapp/`.
+// Every request to `app://local/...` is served from `webapp/`.
 // Unknown paths (e.g. deep expo-router routes on cold start) fall back to
 // index.html so the SPA can hydrate and route client-side.
+//
+// We read files with `fs.readFile` (asar-transparent) and build explicit
+// Response objects with proper MIME types + CORS headers. This is what
+// fixes:
+//   • "Unmatched Route" — the initial load target is now `app://local/`
+//     (pathname "/"), which expo-router matches to the index route.
+//   • ☐ icon glyphs — .ttf files are now served with `Content-Type: font/ttf`
+//     and `Access-Control-Allow-Origin: *`, so Chromium accepts them for
+//     @font-face rules injected by expo-font.
 function registerAppProtocol() {
+  const WEBAPP_ROOT = path.resolve(WEBAPP_DIR);
+
   session.defaultSession.protocol.handle('app', async (request) => {
     try {
       const parsed = new URL(request.url);
       // Ignore host component — we always serve from WEBAPP_DIR.
       let pathname = decodeURIComponent(parsed.pathname || '/');
-      // Prevent path traversal.
+      // Strip query/hash artefacts, prevent path traversal.
       pathname = path.posix.normalize(pathname).replace(/^\/+/, '');
-      let filePath = path.join(WEBAPP_DIR, pathname);
-      // If the request has no extension or the file doesn't exist, try:
-      //   1. `path/index.html`     (folder routes)
-      //   2. `path.html`           (expo-router file-based routes)
-      //   3. fallback to /index.html (SPA hydration entry)
-      if (!pathname || pathname === '/' || pathname === '') {
+
+      // Normalise `index.html` → root so expo-router matches the index route
+      // instead of showing "+not-found" when pathname is literally "/index.html".
+      if (pathname === 'index.html') pathname = '';
+
+      let filePath;
+      if (!pathname) {
+        // Root — serve the SPA entry point.
         filePath = INDEX_FILE;
-      } else if (!fs.existsSync(filePath)) {
-        const asIndex = path.join(WEBAPP_DIR, pathname, 'index.html');
-        const asHtml  = path.join(WEBAPP_DIR, `${pathname.replace(/\/$/, '')}.html`);
-        if      (fs.existsSync(asIndex)) filePath = asIndex;
-        else if (fs.existsSync(asHtml))  filePath = asHtml;
-        else                             filePath = INDEX_FILE;
+      } else {
+        const direct   = path.join(WEBAPP_DIR, pathname);
+        const asIndex  = path.join(WEBAPP_DIR, pathname, 'index.html');
+        const asHtml   = path.join(WEBAPP_DIR, `${pathname.replace(/\/$/, '')}.html`);
+        if      (fs.existsSync(direct)  && fs.statSync(direct).isFile()) filePath = direct;
+        else if (fs.existsSync(asIndex))                                 filePath = asIndex;
+        else if (fs.existsSync(asHtml))                                  filePath = asHtml;
+        else                                                             filePath = INDEX_FILE;
       }
-      // Guarantee we stay inside WEBAPP_DIR (defence in depth).
+
+      // Defence in depth — guarantee we stay inside WEBAPP_DIR.
       const resolved = path.resolve(filePath);
-      if (!resolved.startsWith(path.resolve(WEBAPP_DIR))) {
+      if (!resolved.startsWith(WEBAPP_ROOT)) {
         return new Response('403 forbidden', { status: 403 });
       }
-      return net.fetch(url.pathToFileURL(resolved).toString());
+
+      const data = fs.readFileSync(resolved);        // asar-aware
+      const contentType = mimeFor(resolved);
+      return new Response(data, {
+        status: 200,
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': String(data.length),
+          // Same-origin serves for app://local, but explicit ACAO keeps
+          // Chromium happy when it treats font requests as "opaque" on
+          // custom schemes. Costs nothing and prevents silent ☐-boxes.
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-cache',
+        },
+      });
     } catch (e) {
-      log('app:// handler error:', e && e.message);
+      log('app:// handler error:', e && e.message, 'for', request.url);
       return new Response(`internal error: ${e && e.message}`, { status: 500 });
     }
   });
@@ -175,9 +239,16 @@ async function createWindow() {
     store.set('zoomFactor', next);
   });
 
-  // Load the LOCAL bundled index page — no network, no preview URL.
+  // Load the LOCAL bundled SPA entry — no network, no preview URL.
+  //
+  // IMPORTANT: We deliberately load `app://local/` (root, pathname "/") and
+  // NOT `app://local/index.html`. Expo Router reads `window.location.pathname`
+  // to decide which screen to render. If pathname is `/index.html`, no route
+  // matches and it falls through to the `+not-found` screen ("Unmatched
+  // Route — Page could not be found"). Loading the root path makes it match
+  // the `index` route, which then redirects to /login or /home.
   try {
-    await mainWindow.loadURL('app://local/index.html');
+    await mainWindow.loadURL('app://local/');
     mainWindow.show();
   } catch (e) {
     log('loadURL app:// failed:', e && e.message);
